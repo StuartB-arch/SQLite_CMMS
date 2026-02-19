@@ -153,6 +153,18 @@ def migrate_existing_db(conn):
         except Exception:
             pass
 
+    # ---- deactivated_assets: add status column -----------------------------
+    try:
+        cur.execute("ALTER TABLE deactivated_assets ADD COLUMN status TEXT DEFAULT 'Deactivated'")
+    except Exception:
+        pass
+
+    # ---- cannot_find_assets: add technician_name column -------------------
+    try:
+        cur.execute("ALTER TABLE cannot_find_assets ADD COLUMN technician_name TEXT")
+    except Exception:
+        pass
+
     conn.commit()
 
 
@@ -375,6 +387,7 @@ def create_core_tables(conn):
             status           TEXT    DEFAULT 'Missing',
             search_status    TEXT,
             found_date       TEXT,
+            technician_name  TEXT,
             notes            TEXT,
             created_date     TEXT    DEFAULT CURRENT_TIMESTAMP
         )
@@ -387,6 +400,7 @@ def create_core_tables(conn):
         CREATE TABLE IF NOT EXISTS deactivated_assets (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             bfm_equipment_no TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
+            status           TEXT    DEFAULT 'Deactivated',
             reason           TEXT,
             deactivated_by   TEXT,
             deactivated_date TEXT    DEFAULT CURRENT_TIMESTAMP,
