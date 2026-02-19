@@ -24,11 +24,50 @@ _DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cmms_data.d
 
 
 # ---------------------------------------------------------------------------
-# Row factory: returns rows as dict-like objects (same as RealDictCursor)
+# Row factory: returns rows that support BOTH integer-index AND string-key
+# access, matching the behaviour of psycopg2's RealDictCursor while also
+# being backward-compatible with tuple-style row[0] access used throughout
+# the existing codebase.
 # ---------------------------------------------------------------------------
+
+class _Row(dict):
+    """
+    dict subclass returned by every SQLite query.
+
+    Supports:
+      row['column_name']   – named access (dict style)
+      row[0]               – positional access (tuple style)
+      len(row)             – number of columns
+      isinstance(row, dict) → True
+    """
+
+    __slots__ = ("_keys",)
+
+    def __init__(self, keys, values):
+        super().__init__(zip(keys, values))
+        object.__setattr__(self, "_keys", keys)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return super().__getitem__(object.__getattribute__(self, "_keys")[key])
+        return super().__getitem__(key)
+
+    def __len__(self):
+        return len(object.__getattribute__(self, "_keys"))
+
+    def get(self, key, default=None):
+        if isinstance(key, int):
+            keys = object.__getattribute__(self, "_keys")
+            if 0 <= key < len(keys):
+                return super().get(keys[key], default)
+            return default
+        return super().get(key, default)
+
+
 def _dict_factory(cursor, row):
-    """Convert SQLite Row to plain dict for compatibility with existing code."""
-    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+    """Return a _Row so callers can use row[0] or row['name'] interchangeably."""
+    keys = [col[0] for col in cursor.description]
+    return _Row(keys, row)
 
 
 # ---------------------------------------------------------------------------
