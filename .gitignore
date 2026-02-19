@@ -1,0 +1,20 @@
+# SQLite database (user data - never commit)
+*.db
+*.db-wal
+*.db-shm
+
+# Backup files
+AIT_CMMS2.3.1/backups/
+*.cmmsbackup
+*.cmmsbackup.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.bak
