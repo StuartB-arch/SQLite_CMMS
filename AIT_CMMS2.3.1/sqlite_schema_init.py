@@ -132,6 +132,27 @@ def migrate_existing_db(conn):
         except Exception:
             pass
 
+    # ---- equipment_manuals: add columns required by manuals_module.py ------
+    for col_def in [
+        "ALTER TABLE equipment_manuals ADD COLUMN title          TEXT DEFAULT ''",
+        "ALTER TABLE equipment_manuals ADD COLUMN description    TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN category       TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN sap_number     TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN bfm_number     TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN equipment_name TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN file_name      TEXT DEFAULT ''",
+        "ALTER TABLE equipment_manuals ADD COLUMN file_extension TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN file_data      BLOB",
+        "ALTER TABLE equipment_manuals ADD COLUMN file_size      INTEGER",
+        "ALTER TABLE equipment_manuals ADD COLUMN last_updated   TEXT DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE equipment_manuals ADD COLUMN tags           TEXT",
+        "ALTER TABLE equipment_manuals ADD COLUMN status         TEXT DEFAULT 'Active'",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass
+
     conn.commit()
 
 
@@ -452,17 +473,26 @@ def create_core_tables(conn):
     """)
 
     # ------------------------------------------------------------------
-    # equipment_manuals
+    # equipment_manuals  (schema matches manuals_module.py)
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS equipment_manuals (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            bfm_equipment_no TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
-            manual_path      TEXT,
-            document_name    TEXT,
-            document_revision TEXT,
+            title            TEXT    DEFAULT '',
+            description      TEXT,
+            category         TEXT,
+            sap_number       TEXT,
+            bfm_number       TEXT,
+            equipment_name   TEXT,
+            file_name        TEXT    DEFAULT '',
+            file_extension   TEXT,
+            file_data        BLOB,
+            file_size        INTEGER,
             uploaded_by      TEXT,
             upload_date      TEXT    DEFAULT CURRENT_TIMESTAMP,
+            last_updated     TEXT    DEFAULT CURRENT_TIMESTAMP,
+            tags             TEXT,
+            status           TEXT    DEFAULT 'Active',
             notes            TEXT
         )
     """)
