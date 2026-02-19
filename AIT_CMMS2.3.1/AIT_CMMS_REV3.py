@@ -7015,10 +7015,10 @@ class AITCMMSSystem:
             self.root.destroy()
             return
 
-        # Show login dialog after database pool is ready
-        if not self.show_login_dialog():
-            self.root.destroy()
-            return
+        # Skip login - auto-authenticate as admin
+        self.user_id = 1
+        self.user_name = "Admin"
+        self.current_user_role = "Manager"
 
         # Ensure window is maximized after login
         self.root.update_idletasks()
@@ -9887,8 +9887,8 @@ class AITCMMSSystem:
             cursor = self.conn.cursor()
 
             print("=" * 60)
-            print("CHECK: Connected to Neon PostgreSQL successfully!")
-            print("CHECK: Connection pool initialized for multi-user support")
+            print("CHECK: Connected to SQLite database successfully!")
+            print("CHECK: Connection pool initialized")
             print("=" * 60)
 
             # PERFORMANCE FIX: Check if database is already initialized

@@ -28,6 +28,114 @@ def get_connection(db_path=None):
 
 
 # ---------------------------------------------------------------------------
+# Migration – patch existing databases that were created with old column names
+# ---------------------------------------------------------------------------
+
+def migrate_existing_db(conn):
+    """
+    Bring older database files up to the current schema without losing data.
+    Each statement is wrapped in its own try/except so one failure does not
+    block the rest.
+    """
+    cur = conn.cursor()
+
+    # ---- users: add missing columns ----------------------------------------
+    for col_def in [
+        "ALTER TABLE users ADD COLUMN email       TEXT",
+        "ALTER TABLE users ADD COLUMN last_login  TEXT",
+        "ALTER TABLE users ADD COLUMN created_by  TEXT",
+        "ALTER TABLE users ADD COLUMN notes       TEXT",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass  # column already exists
+
+    # ---- equipment: rename sap_no -> sap_material_no -----------------------
+    try:
+        cur.execute("ALTER TABLE equipment RENAME COLUMN sap_no TO sap_material_no")
+    except Exception:
+        pass  # already renamed or column doesn't exist
+
+    # ---- equipment: rename tool_id -> tool_id_drawing_no -------------------
+    try:
+        cur.execute("ALTER TABLE equipment RENAME COLUMN tool_id TO tool_id_drawing_no")
+    except Exception:
+        pass
+
+    # ---- cm_parts_used: rename used_date -> recorded_date ------------------
+    try:
+        cur.execute("ALTER TABLE cm_parts_used RENAME COLUMN used_date TO recorded_date")
+    except Exception:
+        pass
+
+    # ---- cm_parts_used: add missing columns --------------------------------
+    for col_def in [
+        "ALTER TABLE cm_parts_used ADD COLUMN recorded_by  TEXT",
+        "ALTER TABLE cm_parts_used ADD COLUMN total_cost   REAL DEFAULT 0",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass
+
+    # ---- mro_stock_transactions: rename quantity_changed -> quantity --------
+    try:
+        cur.execute("ALTER TABLE mro_stock_transactions RENAME COLUMN quantity_changed TO quantity")
+    except Exception:
+        pass
+
+    # ---- mro_stock_transactions: rename performed_by -> technician_name ----
+    try:
+        cur.execute("ALTER TABLE mro_stock_transactions RENAME COLUMN performed_by TO technician_name")
+    except Exception:
+        pass
+
+    # ---- mro_stock_transactions: add missing columns -----------------------
+    for col_def in [
+        "ALTER TABLE mro_stock_transactions ADD COLUMN work_order TEXT",
+        "ALTER TABLE mro_stock_transactions ADD COLUMN notes      TEXT",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass
+
+    # ---- cm_parts_requests: add missing columns ----------------------------
+    for col_def in [
+        "ALTER TABLE cm_parts_requests ADD COLUMN bfm_equipment_no TEXT",
+        "ALTER TABLE cm_parts_requests ADD COLUMN website           TEXT",
+        "ALTER TABLE cm_parts_requests ADD COLUMN email_sent_at     TEXT",
+        "ALTER TABLE cm_parts_requests ADD COLUMN created_date      TEXT DEFAULT CURRENT_TIMESTAMP",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass
+
+    # ---- equipment_missing_parts: add missing columns ----------------------
+    for col_def in [
+        "ALTER TABLE equipment_missing_parts ADD COLUMN description              TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN location                 TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN reported_by              TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN reported_date            TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN priority                 TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN assigned_technician      TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN missing_parts_description TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN notes                    TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN closed_date              TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN closed_by                TEXT",
+        "ALTER TABLE equipment_missing_parts ADD COLUMN updated_date             TEXT DEFAULT CURRENT_TIMESTAMP",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass
+
+    conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # DDL – core tables
 # ---------------------------------------------------------------------------
 
@@ -44,9 +152,13 @@ def create_core_tables(conn):
             password_hash TEXT    NOT NULL,
             full_name     TEXT,
             role          TEXT    DEFAULT 'Technician',
+            email         TEXT,
             is_active     INTEGER DEFAULT 1,
             created_date  TEXT    DEFAULT CURRENT_TIMESTAMP,
-            updated_date  TEXT
+            updated_date  TEXT,
+            last_login    TEXT,
+            created_by    TEXT,
+            notes         TEXT
         )
     """)
 
@@ -90,34 +202,36 @@ def create_core_tables(conn):
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS equipment (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            bfm_equipment_no  TEXT    NOT NULL UNIQUE,
-            sap_no            TEXT,
-            description       TEXT,
-            tool_id           TEXT,
-            location          TEXT,
-            master_lin        TEXT,
-            weekly_pm         INTEGER DEFAULT 0,
-            monthly_pm        INTEGER DEFAULT 0,
-            six_month_pm      INTEGER DEFAULT 0,
-            annual_pm         INTEGER DEFAULT 0,
-            last_weekly_pm    TEXT,
-            last_monthly_pm   TEXT,
-            last_six_month_pm TEXT,
-            last_annual_pm    TEXT,
-            next_annual_pm    TEXT,
-            status            TEXT    DEFAULT 'Active',
-            priority          INTEGER DEFAULT 0,
-            pm_qty            TEXT,
-            picture_1         BLOB,
-            picture_2         BLOB,
-            picture_1_path    TEXT,
-            picture_2_path    TEXT,
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            bfm_equipment_no     TEXT    NOT NULL UNIQUE,
+            sap_material_no      TEXT,
+            description          TEXT,
+            tool_id_drawing_no   TEXT,
+            location             TEXT,
+            master_lin           TEXT,
+            weekly_pm            INTEGER DEFAULT 0,
+            monthly_pm           INTEGER DEFAULT 0,
+            six_month_pm         INTEGER DEFAULT 0,
+            annual_pm            INTEGER DEFAULT 0,
+            last_weekly_pm       TEXT,
+            last_monthly_pm      TEXT,
+            last_six_month_pm    TEXT,
+            last_annual_pm       TEXT,
+            next_monthly_pm      TEXT,
+            next_six_month_pm    TEXT,
+            next_annual_pm       TEXT,
+            status               TEXT    DEFAULT 'Active',
+            priority             INTEGER DEFAULT 0,
+            pm_qty               TEXT,
+            picture_1            BLOB,
+            picture_2            BLOB,
+            picture_1_path       TEXT,
+            picture_2_path       TEXT,
             custom_pm_start_date TEXT,
-            notes             TEXT,
-            version           INTEGER DEFAULT 1,
-            created_date      TEXT    DEFAULT CURRENT_TIMESTAMP,
-            updated_date      TEXT
+            notes                TEXT,
+            version              INTEGER DEFAULT 1,
+            created_date         TEXT    DEFAULT CURRENT_TIMESTAMP,
+            updated_date         TEXT
         )
     """)
 
@@ -131,9 +245,15 @@ def create_core_tables(conn):
             pm_type          TEXT    NOT NULL,
             technician_name  TEXT,
             completion_date  TEXT    NOT NULL,
+            location         TEXT,
             labor_hours      REAL    DEFAULT 0,
-            notes            TEXT,
+            labor_minutes    REAL    DEFAULT 0,
+            pm_due_date      TEXT,
             special_equipment TEXT,
+            notes            TEXT,
+            next_annual_pm_date TEXT,
+            document_name    TEXT    DEFAULT 'Preventive_Maintenance_Form',
+            document_revision TEXT   DEFAULT 'A2',
             created_date     TEXT    DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -143,16 +263,16 @@ def create_core_tables(conn):
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS weekly_pm_schedules (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            bfm_equipment_no  TEXT    NOT NULL REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
-            pm_type           TEXT    NOT NULL,
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            bfm_equipment_no    TEXT    NOT NULL REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
+            pm_type             TEXT    NOT NULL,
             assigned_technician TEXT,
-            week_start_date   TEXT    NOT NULL,
-            scheduled_date    TEXT,
-            status            TEXT    DEFAULT 'Scheduled',
-            completed_date    TEXT,
-            notes             TEXT,
-            created_date      TEXT    DEFAULT CURRENT_TIMESTAMP
+            week_start_date     TEXT    NOT NULL,
+            scheduled_date      TEXT,
+            status              TEXT    DEFAULT 'Scheduled',
+            completed_date      TEXT,
+            notes               TEXT,
+            created_date        TEXT    DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -170,6 +290,7 @@ def create_core_tables(conn):
             assigned_technician TEXT,
             reported_date       TEXT    DEFAULT CURRENT_TIMESTAMP,
             created_date        TEXT    DEFAULT CURRENT_TIMESTAMP,
+            completion_date     TEXT,
             closed_date         TEXT,
             labor_hours         REAL    DEFAULT 0,
             notes               TEXT,
@@ -184,14 +305,18 @@ def create_core_tables(conn):
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS cm_parts_requests (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            cm_number      TEXT    REFERENCES corrective_maintenance(cm_number) ON DELETE CASCADE,
-            part_number    TEXT,
-            model_number   TEXT,
-            requested_by   TEXT,
-            requested_date TEXT    DEFAULT CURRENT_TIMESTAMP,
-            email_sent     INTEGER DEFAULT 0,
-            notes          TEXT
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            cm_number        TEXT    REFERENCES corrective_maintenance(cm_number) ON DELETE CASCADE,
+            bfm_equipment_no TEXT,
+            part_number      TEXT,
+            model_number     TEXT,
+            website          TEXT,
+            requested_by     TEXT,
+            requested_date   TEXT    DEFAULT CURRENT_TIMESTAMP,
+            notes            TEXT,
+            email_sent       INTEGER DEFAULT 0,
+            email_sent_at    TEXT,
+            created_date     TEXT    DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -200,13 +325,22 @@ def create_core_tables(conn):
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS equipment_missing_parts (
-            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-            emp_number               TEXT    UNIQUE,
-            bfm_equipment_no         TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
-            status                   TEXT    DEFAULT 'Open',
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            emp_number                TEXT    UNIQUE,
+            bfm_equipment_no          TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
+            description               TEXT,
+            location                  TEXT,
+            reported_by               TEXT,
+            reported_date             TEXT,
+            priority                  TEXT,
+            status                    TEXT    DEFAULT 'Open',
+            assigned_technician       TEXT,
             missing_parts_description TEXT,
-            created_date             TEXT    DEFAULT CURRENT_TIMESTAMP,
-            resolved_date            TEXT
+            notes                     TEXT,
+            closed_date               TEXT,
+            closed_by                 TEXT,
+            created_date              TEXT    DEFAULT CURRENT_TIMESTAMP,
+            updated_date              TEXT    DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -292,12 +426,12 @@ def create_core_tables(conn):
         CREATE TABLE IF NOT EXISTS mro_stock_transactions (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             part_number      TEXT    REFERENCES mro_inventory(part_number) ON DELETE CASCADE,
-            transaction_type TEXT,
-            quantity_changed REAL,
-            quantity_after   REAL,
-            reason           TEXT,
-            performed_by     TEXT,
-            transaction_date TEXT    DEFAULT CURRENT_TIMESTAMP
+            transaction_type TEXT    NOT NULL,
+            quantity         REAL    NOT NULL,
+            transaction_date TEXT    DEFAULT CURRENT_TIMESTAMP,
+            technician_name  TEXT,
+            work_order       TEXT,
+            notes            TEXT
         )
     """)
 
@@ -306,12 +440,14 @@ def create_core_tables(conn):
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS cm_parts_used (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            cm_number    TEXT    REFERENCES corrective_maintenance(cm_number) ON DELETE CASCADE,
-            part_number  TEXT    REFERENCES mro_inventory(part_number) ON DELETE SET NULL,
-            quantity_used REAL   DEFAULT 1,
-            used_date    TEXT    DEFAULT CURRENT_TIMESTAMP,
-            notes        TEXT
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            cm_number     TEXT    REFERENCES corrective_maintenance(cm_number) ON DELETE CASCADE,
+            part_number   TEXT    REFERENCES mro_inventory(part_number) ON DELETE SET NULL,
+            quantity_used REAL    DEFAULT 1,
+            total_cost    REAL    DEFAULT 0,
+            recorded_date TEXT    DEFAULT CURRENT_TIMESTAMP,
+            recorded_by   TEXT,
+            notes         TEXT
         )
     """)
 
@@ -428,19 +564,29 @@ def create_kpi_tables(conn):
 def create_indexes(conn):
     cur = conn.cursor()
     indexes = [
-        "CREATE INDEX IF NOT EXISTS idx_equipment_bfm      ON equipment(bfm_equipment_no)",
-        "CREATE INDEX IF NOT EXISTS idx_equipment_status   ON equipment(status)",
-        "CREATE INDEX IF NOT EXISTS idx_equipment_priority ON equipment(priority)",
-        "CREATE INDEX IF NOT EXISTS idx_pm_completions_bfm ON pm_completions(bfm_equipment_no)",
-        "CREATE INDEX IF NOT EXISTS idx_pm_completions_date ON pm_completions(completion_date)",
-        "CREATE INDEX IF NOT EXISTS idx_weekly_sched_bfm   ON weekly_pm_schedules(bfm_equipment_no)",
-        "CREATE INDEX IF NOT EXISTS idx_weekly_sched_week  ON weekly_pm_schedules(week_start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_weekly_sched_status ON weekly_pm_schedules(status)",
-        "CREATE INDEX IF NOT EXISTS idx_cm_bfm             ON corrective_maintenance(bfm_equipment_no)",
-        "CREATE INDEX IF NOT EXISTS idx_cm_status          ON corrective_maintenance(status)",
-        "CREATE INDEX IF NOT EXISTS idx_mro_part           ON mro_inventory(part_number)",
-        "CREATE INDEX IF NOT EXISTS idx_mro_status         ON mro_inventory(status)",
-        "CREATE INDEX IF NOT EXISTS idx_audit_table        ON audit_log(table_name)",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_bfm             ON equipment(bfm_equipment_no)",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_status          ON equipment(status)",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_priority        ON equipment(priority)",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_sap_lower       ON equipment(LOWER(sap_material_no))",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_bfm_lower       ON equipment(LOWER(bfm_equipment_no))",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_description_lower ON equipment(LOWER(description))",
+        "CREATE INDEX IF NOT EXISTS idx_equipment_location_lower  ON equipment(LOWER(location))",
+        "CREATE INDEX IF NOT EXISTS idx_pm_completions_bfm        ON pm_completions(bfm_equipment_no)",
+        "CREATE INDEX IF NOT EXISTS idx_pm_completions_date       ON pm_completions(completion_date)",
+        "CREATE INDEX IF NOT EXISTS idx_weekly_sched_bfm          ON weekly_pm_schedules(bfm_equipment_no)",
+        "CREATE INDEX IF NOT EXISTS idx_weekly_sched_week         ON weekly_pm_schedules(week_start_date)",
+        "CREATE INDEX IF NOT EXISTS idx_weekly_sched_status       ON weekly_pm_schedules(status)",
+        "CREATE INDEX IF NOT EXISTS idx_cm_bfm                    ON corrective_maintenance(bfm_equipment_no)",
+        "CREATE INDEX IF NOT EXISTS idx_cm_status                 ON corrective_maintenance(status)",
+        "CREATE INDEX IF NOT EXISTS idx_cm_created_date           ON corrective_maintenance(created_date)",
+        "CREATE INDEX IF NOT EXISTS idx_mro_part                  ON mro_inventory(part_number)",
+        "CREATE INDEX IF NOT EXISTS idx_mro_status                ON mro_inventory(status)",
+        "CREATE INDEX IF NOT EXISTS idx_cm_parts_cm_number        ON cm_parts_used(cm_number)",
+        "CREATE INDEX IF NOT EXISTS idx_cm_parts_part_number      ON cm_parts_used(part_number)",
+        "CREATE INDEX IF NOT EXISTS idx_cm_parts_used_date        ON cm_parts_used(recorded_date)",
+        "CREATE INDEX IF NOT EXISTS idx_mro_transactions_date     ON mro_stock_transactions(transaction_date)",
+        "CREATE INDEX IF NOT EXISTS idx_mro_transactions_part     ON mro_stock_transactions(part_number)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_table               ON audit_log(table_name)",
     ]
     for sql in indexes:
         cur.execute(sql)
@@ -459,11 +605,12 @@ def _hash(password: str) -> str:
 def seed_default_users(conn):
     cur = conn.cursor()
     defaults = [
-        ("admin",     _hash("admin123"),     "Administrator",         "Manager"),
-        ("manager",   _hash("manager123"),   "Maintenance Manager",   "Manager"),
-        ("tech1",     _hash("tech1"),         "Technician 1",          "Technician"),
-        ("tech2",     _hash("tech2"),         "Technician 2",          "Technician"),
-        ("parts",     _hash("parts123"),      "Parts Coordinator",     "Parts Coordinator"),
+        ("admin",   _hash("admin123"),   "Administrator",       "Manager"),
+        ("manager", _hash("manager123"), "Maintenance Manager", "Manager"),
+        ("tech1",   _hash("tech1"),      "Technician 1",        "Technician"),
+        ("tech2",   _hash("tech2"),      "Technician 2",        "Technician"),
+        ("parts",   _hash("parts123"),   "Parts Coordinator",   "Parts Coordinator"),
+        ("apenson", _hash("apenson"),    "Ashica Penson",       "Parts Coordinator"),
     ]
     for username, pw_hash, full_name, role in defaults:
         cur.execute(
@@ -584,10 +731,12 @@ def seed_kpi_definitions(conn):
 def initialise_database(db_path=None):
     """
     Create all tables and seed data if they do not already exist.
+    Also migrates existing databases to fix column name mismatches.
     Safe to call every time the application starts.
     """
     conn = get_connection(db_path)
     try:
+        migrate_existing_db(conn)   # fix any old column names first
         create_core_tables(conn)
         create_kpi_tables(conn)
         create_indexes(conn)
