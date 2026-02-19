@@ -185,7 +185,7 @@ class UserManagementDialog:
             try:
                 with db_pool.get_cursor() as cursor:
                     # Check if username exists
-                    cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+                    cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
                     if cursor.fetchone():
                         messagebox.showerror("Error", "Username already exists")
                         return
@@ -195,7 +195,7 @@ class UserManagementDialog:
                     cursor.execute("""
                         INSERT INTO users
                         (username, password_hash, full_name, email, role, created_by, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (username, password_hash, fullname, email, role, self.current_user, notes))
 
                     # Log the action
@@ -231,7 +231,7 @@ class UserManagementDialog:
                 cursor.execute("""
                     SELECT username, full_name, email, role, is_active, notes
                     FROM users
-                    WHERE id = %s
+                    WHERE id = ?
                 """, (user_id,))
                 user = cursor.fetchone()
 
@@ -297,31 +297,31 @@ class UserManagementDialog:
                     updates = []
                     params = []
 
-                    updates.append("full_name = %s")
+                    updates.append("full_name = ?")
                     params.append(fullname_var.get().strip())
 
-                    updates.append("email = %s")
+                    updates.append("email = ?")
                     params.append(email_var.get().strip())
 
-                    updates.append("role = %s")
+                    updates.append("role = ?")
                     params.append(role_var.get())
 
-                    updates.append("is_active = %s")
+                    updates.append("is_active = ?")
                     params.append(active_var.get())
 
-                    updates.append("notes = %s")
+                    updates.append("notes = ?")
                     params.append(notes_text.get('1.0', 'end-1c').strip())
 
                     # Update password if provided
                     new_password = password_var.get()
                     if new_password:
-                        updates.append("password_hash = %s")
+                        updates.append("password_hash = ?")
                         params.append(UserManager.hash_password(new_password))
 
                     updates.append("updated_date = CURRENT_TIMESTAMP")
                     params.append(user_id)
 
-                    query = f"UPDATE users SET {', '.join(updates)} WHERE id = %s"
+                    query = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
                     cursor.execute(query, params)
 
                     # Log the action
@@ -381,10 +381,10 @@ class UserManagementDialog:
                             notes=f"Deleted user: {username} ({role})")
 
                 # Delete all sessions for this user first (to avoid foreign key constraint)
-                cursor.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+                cursor.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
 
                 # Now delete the user
-                cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+                cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
                 # Check if deletion was successful
                 if cursor.rowcount == 0:

@@ -5,7 +5,6 @@ Add this to your existing AIT_CMMS_REV3.py file
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-#import sqlite3
 from datetime import datetime
 import os
 from PIL import Image, ImageTk
@@ -33,7 +32,7 @@ class MROStockManager:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS mro_inventory (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 part_number TEXT UNIQUE NOT NULL,
                 model_number TEXT,
@@ -50,8 +49,8 @@ class MROStockManager:
                 bin TEXT,
                 picture_1_path TEXT,
                 picture_2_path TEXT,
-                picture_1_data BYTEA,
-                picture_2_data BYTEA,
+                picture_1_data BLOB,
+                picture_2_data BLOB,
                 notes TEXT,
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
                 created_date TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -62,13 +61,10 @@ class MROStockManager:
         # Migrate existing tables to add new columns if they don't exist
         try:
             # Check if picture_1_data column exists
-            cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='mro_inventory' AND column_name='picture_1_data'
-            """)
-            if not cursor.fetchone():
-                cursor.execute('ALTER TABLE mro_inventory ADD COLUMN picture_1_data BYTEA')
+            cursor.execute("PRAGMA table_info(mro_inventory)")
+            col_names = [row['name'] if isinstance(row, dict) else row[1] for row in cursor.fetchall()]
+            if 'picture_1_data' not in col_names:
+                cursor.execute('ALTER TABLE mro_inventory ADD COLUMN picture_1_data BLOB')
                 self.conn.commit()
                 print("Added picture_1_data column to mro_inventory table")
         except Exception as e:
@@ -77,13 +73,10 @@ class MROStockManager:
 
         try:
             # Check if picture_2_data column exists
-            cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='mro_inventory' AND column_name='picture_2_data'
-            """)
-            if not cursor.fetchone():
-                cursor.execute('ALTER TABLE mro_inventory ADD COLUMN picture_2_data BYTEA')
+            cursor.execute("PRAGMA table_info(mro_inventory)")
+            col_names = [row['name'] if isinstance(row, dict) else row[1] for row in cursor.fetchall()]
+            if 'picture_2_data' not in col_names:
+                cursor.execute('ALTER TABLE mro_inventory ADD COLUMN picture_2_data BLOB')
                 self.conn.commit()
                 print("Added picture_2_data column to mro_inventory table")
         except Exception as e:
@@ -159,7 +152,7 @@ class MROStockManager:
         # Stock transactions table for tracking stock movements
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS mro_stock_transactions (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 part_number TEXT NOT NULL,
                 transaction_type TEXT NOT NULL,
                 quantity REAL NOT NULL,
@@ -174,7 +167,7 @@ class MROStockManager:
         # CM parts usage table for tracking parts used in corrective maintenance
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS cm_parts_used (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 cm_number TEXT NOT NULL,
                 part_number TEXT NOT NULL,
                 quantity_used REAL NOT NULL,
@@ -535,7 +528,7 @@ class MROStockManager:
                             unit_of_measure, quantity_in_stock, unit_price, minimum_stock,
                             supplier, location, rack, row, bin, picture_1_path, picture_2_path,
                             picture_1_data, picture_2_data, notes
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         fields['name'].get(),
                         fields['part_number'].get(),
@@ -616,7 +609,7 @@ class MROStockManager:
                 # Use TRIM() to handle leading/trailing spaces in part numbers
                 cursor.execute('''
                     SELECT part_number FROM mro_inventory
-                    WHERE TRIM(part_number) LIKE %s OR TRIM(part_number) = %s
+                    WHERE TRIM(part_number) LIKE ? OR TRIM(part_number) = ?
                     ORDER BY part_number
                 ''', (f'%{part_number}%', part_number))
                 similar_parts = cursor.fetchall()
@@ -628,7 +621,7 @@ class MROStockManager:
                            supplier, location, rack, row, bin, picture_1_path,
                            picture_2_path, picture_1_data, picture_2_data, notes,
                            last_updated, created_date, status
-                    FROM mro_inventory WHERE TRIM(part_number) = %s
+                    FROM mro_inventory WHERE TRIM(part_number) = ?
                 ''', (part_number,))
                 part_data = cursor.fetchone()
 
@@ -820,7 +813,7 @@ class MROStockManager:
                 # Get existing photo data and paths from database first
                 with db_pool.get_cursor(commit=False) as cursor:
                     # Use TRIM() to handle leading/trailing spaces in part numbers
-                    cursor.execute('SELECT picture_1_path, picture_2_path, picture_1_data, picture_2_data FROM mro_inventory WHERE TRIM(part_number) = %s', (part_number,))
+                    cursor.execute('SELECT picture_1_path, picture_2_path, picture_1_data, picture_2_data FROM mro_inventory WHERE TRIM(part_number) = ?', (part_number,))
                     existing_data = cursor.fetchone()
                     existing_pic1_path = existing_data['picture_1_path'] if existing_data else None
                     existing_pic2_path = existing_data['picture_2_path'] if existing_data else None
@@ -854,13 +847,13 @@ class MROStockManager:
                     # Use TRIM() to handle leading/trailing spaces in part numbers
                     cursor.execute('''
                         UPDATE mro_inventory SET
-                            name = %s, model_number = %s, equipment = %s, engineering_system = %s,
-                            unit_of_measure = %s, quantity_in_stock = %s, unit_price = %s,
-                            minimum_stock = %s, supplier = %s, location = %s, rack = %s,
-                            row = %s, bin = %s, picture_1_path = %s, picture_2_path = %s,
-                            picture_1_data = %s, picture_2_data = %s,
-                            notes = %s, status = %s, last_updated = %s
-                        WHERE TRIM(part_number) = %s
+                            name = ?, model_number = ?, equipment = ?, engineering_system = ?,
+                            unit_of_measure = ?, quantity_in_stock = ?, unit_price = ?,
+                            minimum_stock = ?, supplier = ?, location = ?, rack = ?,
+                            row = ?, bin = ?, picture_1_path = ?, picture_2_path = ?,
+                            picture_1_data = ?, picture_2_data = ?,
+                            notes = ?, status = ?, last_updated = ?
+                        WHERE TRIM(part_number) = ?
                     ''', (
                         fields['name'].get(),
                         fields['model_number'].get(),
@@ -917,7 +910,7 @@ class MROStockManager:
             # Check if part has any transaction history
             # Use TRIM() to handle leading/trailing spaces in part numbers
             cursor.execute(
-                'SELECT COUNT(*) FROM mro_stock_transactions WHERE TRIM(part_number) = %s',
+                'SELECT COUNT(*) FROM mro_stock_transactions WHERE TRIM(part_number) = ?',
                 (part_number,)
             )
             transaction_count = cursor.fetchone()[0]
@@ -925,7 +918,7 @@ class MROStockManager:
             # Check if part has been used in CM work orders
             # Use TRIM() to handle leading/trailing spaces in part numbers
             cursor.execute(
-                'SELECT COUNT(*) FROM cm_parts_used WHERE TRIM(part_number) = %s',
+                'SELECT COUNT(*) FROM cm_parts_used WHERE TRIM(part_number) = ?',
                 (part_number,)
             )
             cm_usage_count = cursor.fetchone()[0]
@@ -947,7 +940,7 @@ class MROStockManager:
                 if result:
                     # Use TRIM() to handle leading/trailing spaces in part numbers
                     cursor.execute(
-                        "UPDATE mro_inventory SET status = 'Inactive' WHERE TRIM(part_number) = %s",
+                        "UPDATE mro_inventory SET status = 'Inactive' WHERE TRIM(part_number) = ?",
                         (part_number,)
                     )
                     self.conn.commit()
@@ -969,7 +962,7 @@ class MROStockManager:
 
                 if result:
                     # Use TRIM() to handle leading/trailing spaces in part numbers
-                    cursor.execute('DELETE FROM mro_inventory WHERE TRIM(part_number) = %s', (part_number,))
+                    cursor.execute('DELETE FROM mro_inventory WHERE TRIM(part_number) = ?', (part_number,))
                     self.conn.commit()
                     messagebox.showinfo("Success", "Part deleted successfully!")
                     self.refresh_mro_list()
@@ -1005,7 +998,7 @@ class MROStockManager:
                            supplier, location, rack, row, bin, picture_1_path,
                            picture_2_path, picture_1_data, picture_2_data, notes,
                            last_updated, created_date, status
-                    FROM mro_inventory WHERE TRIM(part_number) = %s
+                    FROM mro_inventory WHERE TRIM(part_number) = ?
                 ''', (part_number,))
                 part_data = cursor.fetchone()
 
@@ -1018,7 +1011,7 @@ class MROStockManager:
                         f"Try clicking the Refresh button and then try again.")
                     return
 
-                # Extract all data while cursor is still active (RealDictCursor data becomes invalid after context exits)
+                # Extract all data while cursor is still active
                 id = part_data['id']
                 name = part_data['name']
                 part_num = part_data['part_number']
@@ -1260,7 +1253,7 @@ class MROStockManager:
                     FROM cm_parts_used cp
                     LEFT JOIN corrective_maintenance cm ON cp.cm_number = cm.cm_number
                     LEFT JOIN mro_inventory mi ON cp.part_number = mi.part_number
-                    WHERE TRIM(cp.part_number) = %s
+                    WHERE TRIM(cp.part_number) = ?
                     ORDER BY cp.recorded_date DESC
                     LIMIT 50
                 ''', (part_number,))
@@ -1288,12 +1281,12 @@ class MROStockManager:
                     cursor.execute('''
                         SELECT SUM(quantity_used)
                         FROM cm_parts_used
-                        WHERE TRIM(part_number) = %s
-                        AND recorded_date::timestamp >= CURRENT_DATE - INTERVAL '30 days'
+                        WHERE TRIM(part_number) = ?
+                        AND date(recorded_date) >= date('now', '-30 days')
                     ''', (part_number,))
 
                     recent_result = cursor.fetchone()
-                    recent_usage = recent_result['sum'] if recent_result and recent_result['sum'] else 0
+                    recent_usage = recent_result[0] if recent_result and recent_result[0] else 0
                     ttk.Label(stats_frame, text=f"Usage Last 30 Days: {recent_usage:.2f} {unit}",
                             font=('Arial', 9, 'italic')).pack()
                 else:
@@ -1386,7 +1379,7 @@ class MROStockManager:
                     work_order,
                     notes
                 FROM mro_stock_transactions
-                WHERE TRIM(part_number) = %s
+                WHERE TRIM(part_number) = ?
                 ORDER BY transaction_date DESC
                 LIMIT 100
             ''', (part_number,))
@@ -1480,7 +1473,7 @@ class MROStockManager:
                     SUM(cp.quantity_used * mi.unit_price) as total_cost
                 FROM cm_parts_used cp
                 JOIN mro_inventory mi ON cp.part_number = mi.part_number
-                WHERE cp.recorded_date::timestamp >= CURRENT_DATE - INTERVAL '90 days'
+                WHERE date(cp.recorded_date) >= date('now', '-90 days')
                 GROUP BY mi.part_number, mi.name, mi.quantity_in_stock, mi.unit_price
                 ORDER BY total_cost DESC
                 LIMIT 50
@@ -1539,7 +1532,7 @@ class MROStockManager:
         # Get current stock
         cursor = self.conn.cursor()
         # Use TRIM() to handle leading/trailing spaces in part numbers
-        cursor.execute('SELECT quantity_in_stock, unit_of_measure, name FROM mro_inventory WHERE TRIM(part_number) = %s',
+        cursor.execute('SELECT quantity_in_stock, unit_of_measure, name FROM mro_inventory WHERE TRIM(part_number) = ?',
                       (part_number,))
         result = cursor.fetchone()
         current_stock = result[0] if result else 0
@@ -1593,8 +1586,8 @@ class MROStockManager:
                 # Use TRIM() to handle leading/trailing spaces in part numbers
                 cursor.execute('''
                     UPDATE mro_inventory
-                    SET quantity_in_stock = %s, last_updated = %s
-                    WHERE TRIM(part_number) = %s
+                    SET quantity_in_stock = ?, last_updated = ?
+                    WHERE TRIM(part_number) = ?
                 ''', (new_stock, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), part_number))
                 
                 # Log transaction
@@ -1602,7 +1595,7 @@ class MROStockManager:
                     INSERT INTO mro_stock_transactions 
                     (part_number, transaction_type, quantity, technician_name, 
                      work_order, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     part_number,
                     trans_type_val,
@@ -1680,12 +1673,11 @@ class MROStockManager:
         cursor = self.conn.cursor()
         
         cursor.execute('''
-            INSERT INTO mro_inventory (
+            INSERT OR IGNORE INTO mro_inventory (
                 name, part_number, model_number, equipment, engineering_system,
                 unit_of_measure, quantity_in_stock, unit_price, minimum_stock,
                 supplier, location, rack, row, bin
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (part_number) DO NOTHING
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             data.get('Name', ''),
             data.get('Part Number', ''),
@@ -1839,13 +1831,13 @@ class MROStockManager:
             # Get monthly summary of parts used in CMs
             cursor.execute('''
                 SELECT
-                    TO_CHAR(recorded_date::timestamp, 'YYYY-MM') as month,
+                    strftime('%Y-%m', recorded_date) as month,
                     COUNT(DISTINCT cm_number) as cm_count,
                     COUNT(*) as parts_entries,
                     SUM(quantity_used) as total_quantity,
                     SUM(total_cost) as total_cost
                 FROM cm_parts_used
-                GROUP BY TO_CHAR(recorded_date::timestamp, 'YYYY-MM')
+                GROUP BY strftime('%Y-%m', recorded_date)
                 ORDER BY month DESC
                 LIMIT 12
             ''')
@@ -2022,7 +2014,7 @@ class MROStockManager:
 
         # OPTIMIZED: Use LOWER() which now has functional indexes
         if system_filter != 'All':
-            query += ' AND LOWER(engineering_system) = LOWER(%s)'
+            query += ' AND LOWER(engineering_system) = LOWER(?)'
             params.append(system_filter)
 
         if status_filter == 'Low Stock':
@@ -2030,22 +2022,22 @@ class MROStockManager:
             query += ' AND quantity_in_stock < minimum_stock'
         elif status_filter != 'All':
             # OPTIMIZED: Uses functional index on LOWER(status)
-            query += ' AND LOWER(status) = LOWER(%s)'
+            query += ' AND LOWER(status) = LOWER(?)'
             params.append(status_filter)
 
         # Location filter
         if location_filter != 'All':
-            query += ' AND LOWER(location) = LOWER(%s)'
+            query += ' AND LOWER(location) = LOWER(?)'
             params.append(location_filter)
 
         if search_term:
             # OPTIMIZED: LOWER() functions now use functional indexes
             query += ''' AND (
-                LOWER(name) LIKE %s OR
-                LOWER(part_number) LIKE %s OR
-                LOWER(model_number) LIKE %s OR
-                LOWER(equipment) LIKE %s OR
-                LOWER(location) LIKE %s
+                LOWER(name) LIKE ? OR
+                LOWER(part_number) LIKE ? OR
+                LOWER(model_number) LIKE ? OR
+                LOWER(equipment) LIKE ? OR
+                LOWER(location) LIKE ?
             )'''
             search_param = f'%{search_term}%'
             params.extend([search_param] * 5)
@@ -2057,7 +2049,7 @@ class MROStockManager:
 
             # OPTIMIZED: Process results with reduced column set
             for idx, row in enumerate(cursor.fetchall()):
-                # Access row data by column names (RealDictCursor returns dicts)
+                # Access row data by column names (sqlite3.Row allows dict-style access)
                 part_number = row['part_number']
 
                 # DEBUG: Log part numbers containing "319" to diagnose leading zero issue
@@ -2135,7 +2127,7 @@ class MROStockManager:
                 SELECT
                     COUNT(*) as total_parts,
                     COALESCE(SUM(quantity_in_stock * unit_price), 0) as total_value,
-                    COUNT(*) FILTER (WHERE quantity_in_stock < minimum_stock) as low_stock_count
+                    SUM(CASE WHEN quantity_in_stock < minimum_stock THEN 1 ELSE 0 END) as low_stock_count
                 FROM mro_inventory
                 WHERE status = 'Active'
             ''')
@@ -2207,9 +2199,9 @@ class MROStockManager:
                         # Use TRIM() to handle leading/trailing spaces in part numbers
                         cursor.execute('''
                             UPDATE mro_inventory
-                            SET picture_1_data = COALESCE(picture_1_data, %s),
-                                picture_2_data = COALESCE(picture_2_data, %s)
-                            WHERE TRIM(part_number) = %s
+                            SET picture_1_data = COALESCE(picture_1_data, ?),
+                                picture_2_data = COALESCE(picture_2_data, ?)
+                            WHERE TRIM(part_number) = ?
                         ''', (pic1_data, pic2_data, part_number))
                         migrated_count += 1
                     except Exception as e:

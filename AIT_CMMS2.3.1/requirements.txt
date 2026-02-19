@@ -1,5 +1,6 @@
 pandas>=1.3.3
 reportlab>=3.6.8
-psycopg2-binary>=2.9.0
 Pillow>=8.0.0
 python-docx
+# sqlite3 is part of the Python standard library - no install needed
+# psycopg2-binary removed: application now uses SQLite (fully offline)

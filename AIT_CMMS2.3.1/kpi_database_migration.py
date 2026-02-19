@@ -3,7 +3,6 @@ KPI Database Migration Script
 Creates tables for 2025 KPI tracking and management
 """
 
-import psycopg2
 from database_utils import DatabaseConnectionPool
 
 
@@ -13,7 +12,7 @@ def create_kpi_tables(cursor):
     # Table 1: KPI Definitions (from Excel file)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS kpi_definitions (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             function_code TEXT NOT NULL,
             kpi_name TEXT NOT NULL UNIQUE,
             description TEXT,
@@ -21,24 +20,24 @@ def create_kpi_tables(cursor):
             acceptance_criteria TEXT,
             frequency TEXT,
             data_source TEXT,
-            is_active BOOLEAN DEFAULT TRUE,
-            created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_date TIMESTAMP
+            is_active INTEGER DEFAULT 1,
+            created_date TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_date TEXT
         )
     """)
 
     # Table 2: KPI Manual Data Input (for missing data that needs manual entry)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS kpi_manual_data (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             kpi_name TEXT NOT NULL,
             measurement_period TEXT NOT NULL,  -- e.g., '2025-01', 'Q1-2025'
             data_field TEXT NOT NULL,  -- e.g., 'accident_count', 'hours_worked'
-            data_value NUMERIC,
+            data_value REAL,
             data_text TEXT,
             notes TEXT,
             entered_by TEXT,
-            entered_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            entered_date TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (kpi_name) REFERENCES kpi_definitions(kpi_name) ON DELETE CASCADE,
             UNIQUE(kpi_name, measurement_period, data_field)
         )
@@ -47,14 +46,14 @@ def create_kpi_tables(cursor):
     # Table 3: KPI Calculated Results (stores final KPI values)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS kpi_results (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             kpi_name TEXT NOT NULL,
             measurement_period TEXT NOT NULL,  -- e.g., '2025-01', 'Q1-2025'
-            calculated_value NUMERIC,
+            calculated_value REAL,
             calculated_text TEXT,
-            target_value NUMERIC,
-            meets_criteria BOOLEAN,
-            calculation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            target_value REAL,
+            meets_criteria INTEGER,
+            calculation_date TEXT DEFAULT CURRENT_TIMESTAMP,
             calculated_by TEXT,
             notes TEXT,
             FOREIGN KEY (kpi_name) REFERENCES kpi_definitions(kpi_name) ON DELETE CASCADE,
@@ -65,8 +64,8 @@ def create_kpi_tables(cursor):
     # Table 4: KPI Export History
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS kpi_exports (
-            id SERIAL PRIMARY KEY,
-            export_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            export_date TEXT DEFAULT CURRENT_TIMESTAMP,
             export_period TEXT,
             export_type TEXT,  -- 'PDF', 'Excel'
             exported_by TEXT,
@@ -154,10 +153,9 @@ def insert_kpi_definitions(cursor):
 
     for kpi in kpi_data:
         cursor.execute("""
-            INSERT INTO kpi_definitions
+            INSERT OR IGNORE INTO kpi_definitions
             (function_code, kpi_name, description, formula, acceptance_criteria, frequency, data_source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (kpi_name) DO NOTHING
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, kpi)
 
     print(f"✓ Inserted {len(kpi_data)} KPI definitions")

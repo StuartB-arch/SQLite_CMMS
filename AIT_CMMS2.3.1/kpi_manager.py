@@ -3,8 +3,6 @@ KPI Manager Module
 Handles KPI calculations, data management, and reporting for 2025 KPIs
 """
 
-import psycopg2
-from psycopg2 import extras
 from datetime import datetime, timedelta
 from decimal import Decimal
 import calendar
@@ -21,10 +19,10 @@ class KPIManager:
         """Get all active KPI definitions"""
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM kpi_definitions
-                WHERE is_active = TRUE
+                WHERE is_active = 1
                 ORDER BY function_code, kpi_name
             """)
             results = cursor.fetchall()
@@ -37,10 +35,10 @@ class KPIManager:
         """Get specific KPI definition"""
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM kpi_definitions
-                WHERE kpi_name = %s AND is_active = TRUE
+                WHERE kpi_name = ? AND is_active = TRUE
             """, (kpi_name,))
             result = cursor.fetchone()
             cursor.close()
@@ -57,13 +55,12 @@ class KPIManager:
             cursor.execute("""
                 INSERT INTO kpi_manual_data
                 (kpi_name, measurement_period, data_field, data_value, data_text, notes, entered_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (kpi_name, measurement_period, data_field)
-                DO UPDATE SET
-                    data_value = EXCLUDED.data_value,
-                    data_text = EXCLUDED.data_text,
-                    notes = EXCLUDED.notes,
-                    entered_by = EXCLUDED.entered_by,
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(kpi_name, measurement_period, data_field) DO UPDATE SET
+                    data_value = excluded.data_value,
+                    data_text = excluded.data_text,
+                    notes = excluded.notes,
+                    entered_by = excluded.entered_by,
                     entered_date = CURRENT_TIMESTAMP
             """, (kpi_name, measurement_period, data_field, data_value, data_text, notes, entered_by))
             conn.commit()
@@ -79,10 +76,10 @@ class KPIManager:
         """Get manual data for a specific KPI and period"""
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM kpi_manual_data
-                WHERE kpi_name = %s AND measurement_period = %s
+                WHERE kpi_name = ? AND measurement_period = ?
                 ORDER BY data_field
             """, (kpi_name, measurement_period))
             results = cursor.fetchall()
@@ -102,15 +99,14 @@ class KPIManager:
                 INSERT INTO kpi_results
                 (kpi_name, measurement_period, calculated_value, calculated_text,
                  target_value, meets_criteria, calculated_by, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (kpi_name, measurement_period)
-                DO UPDATE SET
-                    calculated_value = EXCLUDED.calculated_value,
-                    calculated_text = EXCLUDED.calculated_text,
-                    target_value = EXCLUDED.target_value,
-                    meets_criteria = EXCLUDED.meets_criteria,
-                    calculated_by = EXCLUDED.calculated_by,
-                    notes = EXCLUDED.notes,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(kpi_name, measurement_period) DO UPDATE SET
+                    calculated_value = excluded.calculated_value,
+                    calculated_text = excluded.calculated_text,
+                    target_value = excluded.target_value,
+                    meets_criteria = excluded.meets_criteria,
+                    calculated_by = excluded.calculated_by,
+                    notes = excluded.notes,
                     calculation_date = CURRENT_TIMESTAMP
             """, (kpi_name, measurement_period, calculated_value, calculated_text,
                   target_value, meets_criteria, calculated_by, notes))
@@ -127,7 +123,7 @@ class KPIManager:
         """Get KPI results, optionally filtered by period and/or KPI name"""
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
 
             query = """
                 SELECT r.*, d.function_code, d.description, d.acceptance_criteria, d.frequency
@@ -138,11 +134,11 @@ class KPIManager:
             params = []
 
             if measurement_period:
-                query += " AND r.measurement_period = %s"
+                query += " AND r.measurement_period = ?"
                 params.append(measurement_period)
 
             if kpi_name:
-                query += " AND r.kpi_name = %s"
+                query += " AND r.kpi_name = ?"
                 params.append(kpi_name)
 
             query += " ORDER BY d.function_code, r.kpi_name, r.measurement_period DESC"
@@ -175,14 +171,14 @@ class KPIManager:
             # Count scheduled PMs
             cursor.execute("""
                 SELECT COUNT(*) FROM weekly_pm_schedules
-                WHERE week_start_date::date >= %s::date AND week_start_date::date <= %s::date
+                WHERE week_start_date >= ? AND week_start_date <= ?
             """, (start_date, end_date))
             scheduled = cursor.fetchone()[0]
 
             # Count completed PMs
             cursor.execute("""
                 SELECT COUNT(*) FROM pm_completions
-                WHERE completion_date::date >= %s::date AND completion_date::date <= %s::date
+                WHERE completion_date >= ? AND completion_date <= ?
             """, (start_date, end_date))
             completed = cursor.fetchone()[0]
 
@@ -237,14 +233,14 @@ class KPIManager:
             # Count opened CMs (CMs created in October)
             cursor.execute("""
                 SELECT COUNT(*) FROM corrective_maintenance
-                WHERE created_date::date >= %s::date AND created_date::date <= %s::date
+                WHERE created_date >= ? AND created_date <= ?
             """, (start_date, end_date))
             opened = cursor.fetchone()[0]
 
             # Count closed CMs (CMs created in October that are now Closed/Completed)
             cursor.execute("""
                 SELECT COUNT(*) FROM corrective_maintenance
-                WHERE created_date::date >= %s::date AND created_date::date <= %s::date
+                WHERE created_date >= ? AND created_date <= ?
                 AND (status = 'Closed' OR status = 'Completed')
             """, (start_date, end_date))
             closed = cursor.fetchone()[0]
@@ -252,7 +248,7 @@ class KPIManager:
             # Count currently open CMs (CMs created in October that are still Open)
             cursor.execute("""
                 SELECT COUNT(*) FROM corrective_maintenance
-                WHERE created_date::date >= %s::date AND created_date::date <= %s::date
+                WHERE created_date >= ? AND created_date <= ?
                 AND status = 'Open'
             """, (start_date, end_date))
             currently_open = cursor.fetchone()[0]
@@ -302,14 +298,14 @@ class KPIManager:
             # Count WO raised this month (CMs created in this period)
             cursor.execute("""
                 SELECT COUNT(*) FROM corrective_maintenance
-                WHERE created_date::date >= %s::date AND created_date::date <= %s::date
+                WHERE created_date >= ? AND created_date <= ?
             """, (start_date, end_date))
             raised_this_month = cursor.fetchone()[0]
 
             # Count open WO from this month (CMs created in this period that are still Open)
             cursor.execute("""
                 SELECT COUNT(*) FROM corrective_maintenance
-                WHERE created_date::date >= %s::date AND created_date::date <= %s::date
+                WHERE created_date >= ? AND created_date <= ?
                 AND status = 'Open'
             """, (start_date, end_date))
             open_wo = cursor.fetchone()[0]

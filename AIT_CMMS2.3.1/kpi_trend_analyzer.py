@@ -55,7 +55,7 @@ class KPITrendAnalyzer:
         """
         cursor = self.conn.cursor()
 
-        # Calculate start period
+        # Calculate start period using Python-computed cutoff date
         end_date = datetime.now()
         start_date = end_date - timedelta(days=months * 30)
         start_period = start_date.strftime('%Y-%m')
@@ -64,8 +64,8 @@ class KPITrendAnalyzer:
             SELECT measurement_period, data_field, data_value, data_text,
                    entered_date, entered_by
             FROM kpi_manual_data
-            WHERE kpi_name = %s
-            AND measurement_period >= %s
+            WHERE kpi_name = ?
+            AND measurement_period >= ?
             ORDER BY measurement_period ASC
         ''', (kpi_name, start_period))
 
@@ -247,7 +247,7 @@ class KPITrendAnalyzer:
                     'kpi_name': kpi_name,
                     'alert_type': 'high_volatility',
                     'severity': 'low',
-                    'message': f"{kpi_name} shows high volatility: ±{analysis['volatility']} {analysis['unit']}",
+                    'message': f"{kpi_name} shows high volatility: +/-{analysis['volatility']} {analysis['unit']}",
                     'volatility': analysis['volatility'],
                     'average_value': analysis['average_value'],
                     'unit': analysis['unit']
@@ -592,16 +592,16 @@ KPI STATUS:
 
         for kpi in summary['kpi_status']:
             status_symbol = {
-                'meeting_target': '✓',
-                'below_target': '✗',
+                'meeting_target': 'OK',
+                'below_target': 'FAIL',
                 'no_target': '-',
                 'no_data': '?'
             }.get(kpi['status'], '?')
 
             trend_symbol = {
-                'improving': '↑',
-                'declining': '↓',
-                'stable': '→',
+                'improving': 'UP',
+                'declining': 'DOWN',
+                'stable': 'STABLE',
                 'no_data': '?',
                 'insufficient_data': '?'
             }.get(kpi['trend'], '?')

@@ -37,7 +37,7 @@ class ManualsManager:
                 # Create manuals table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS equipment_manuals (
-                        id SERIAL PRIMARY KEY,
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
                         title TEXT NOT NULL,
                         description TEXT,
                         category TEXT,
@@ -49,8 +49,8 @@ class ManualsManager:
                         file_data BYTEA NOT NULL,
                         file_size INTEGER,
                         uploaded_by TEXT,
-                        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        upload_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                        last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
                         tags TEXT,
                         status TEXT DEFAULT 'Active',
                         notes TEXT
@@ -248,52 +248,45 @@ class ManualsManager:
         ttk.Label(main_frame, text="Select File:*").grid(row=row, column=0, sticky='w', pady=5)
         file_frame = ttk.Frame(main_frame)
         file_frame.grid(row=row, column=1, sticky='ew', pady=5)
-
         file_path_var = tk.StringVar()
-        file_entry = ttk.Entry(file_frame, textvariable=file_path_var, width=50, state='readonly')
-        file_entry.pack(side='left', padx=(0, 5), fill='x', expand=True)
+        ttk.Entry(file_frame, textvariable=file_path_var, width=40).pack(side='left', padx=(0, 5))
 
         def browse_file():
-            file_path = filedialog.askopenfilename(
-                title="Select Manual or Print",
+            path = filedialog.askopenfilename(
+                title="Select Manual/Print File",
                 filetypes=[
                     ("PDF files", "*.pdf"),
-                    ("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.tif *.tiff"),
-                    ("Document files", "*.doc *.docx"),
+                    ("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.tiff"),
+                    ("Word documents", "*.doc *.docx"),
+                    ("Excel files", "*.xls *.xlsx"),
                     ("All files", "*.*")
                 ]
             )
-            if file_path:
-                file_path_var.set(file_path)
-                # Auto-fill file name if empty
+            if path:
+                file_path_var.set(path)
+                # Auto-fill file name
                 if not title_entry.get():
-                    title_entry.delete(0, tk.END)
-                    title_entry.insert(0, os.path.splitext(os.path.basename(file_path))[0])
+                    name = os.path.splitext(os.path.basename(path))[0]
+                    title_entry.insert(0, name)
 
-        ttk.Button(file_frame, text="Browse", command=browse_file, width=12).pack(side='left')
+        ttk.Button(file_frame, text="Browse", command=browse_file).pack(side='left')
         row += 1
 
-        ttk.Separator(main_frame, orient='horizontal').grid(
-            row=row, column=0, columnspan=2, sticky='ew', pady=15)
-        row += 1
-
-        # Document details
-        ttk.Label(main_frame, text="Document Details:", font=('Arial', 10, 'bold')).grid(
-            row=row, column=0, columnspan=2, sticky='w', pady=(0, 10))
-        row += 1
-
+        # Title
         ttk.Label(main_frame, text="Title:*").grid(row=row, column=0, sticky='w', pady=5)
         title_entry = ttk.Entry(main_frame, width=50)
         title_entry.grid(row=row, column=1, sticky='ew', pady=5)
         row += 1
 
+        # Description
         ttk.Label(main_frame, text="Description:").grid(row=row, column=0, sticky='nw', pady=5)
         description_text = tk.Text(main_frame, width=50, height=4, wrap='word')
         description_text.grid(row=row, column=1, sticky='ew', pady=5)
         row += 1
 
+        # Category
         ttk.Label(main_frame, text="Category:*").grid(row=row, column=0, sticky='w', pady=5)
-        category_var = tk.StringVar(value='Equipment Manual')
+        category_var = tk.StringVar()
         category_combo = ttk.Combobox(main_frame, textvariable=category_var,
                                       values=['Equipment Manual', 'Service Manual', 'Parts Catalog',
                                               'Wiring Diagram', 'Schematic', 'Installation Guide',
@@ -302,46 +295,33 @@ class ManualsManager:
         category_combo.grid(row=row, column=1, sticky='ew', pady=5)
         row += 1
 
-        ttk.Separator(main_frame, orient='horizontal').grid(
-            row=row, column=0, columnspan=2, sticky='ew', pady=15)
-        row += 1
-
-        # Equipment identification
-        ttk.Label(main_frame, text="Equipment Identification:", font=('Arial', 10, 'bold')).grid(
-            row=row, column=0, columnspan=2, sticky='w', pady=(0, 10))
-        row += 1
-
+        # SAP Number
         ttk.Label(main_frame, text="SAP Number:").grid(row=row, column=0, sticky='w', pady=5)
         sap_entry = ttk.Entry(main_frame, width=50)
         sap_entry.grid(row=row, column=1, sticky='ew', pady=5)
         row += 1
 
+        # BFM Number
         ttk.Label(main_frame, text="BFM Number:").grid(row=row, column=0, sticky='w', pady=5)
         bfm_entry = ttk.Entry(main_frame, width=50)
         bfm_entry.grid(row=row, column=1, sticky='ew', pady=5)
         row += 1
 
+        # Equipment Name
         ttk.Label(main_frame, text="Equipment Name:").grid(row=row, column=0, sticky='w', pady=5)
         equipment_entry = ttk.Entry(main_frame, width=50)
         equipment_entry.grid(row=row, column=1, sticky='ew', pady=5)
         row += 1
 
-        ttk.Separator(main_frame, orient='horizontal').grid(
-            row=row, column=0, columnspan=2, sticky='ew', pady=15)
-        row += 1
-
-        # Additional info
-        ttk.Label(main_frame, text="Additional Information:", font=('Arial', 10, 'bold')).grid(
-            row=row, column=0, columnspan=2, sticky='w', pady=(0, 10))
-        row += 1
-
+        # Tags
         ttk.Label(main_frame, text="Tags:").grid(row=row, column=0, sticky='w', pady=5)
         tags_entry = ttk.Entry(main_frame, width=50)
         tags_entry.grid(row=row, column=1, sticky='ew', pady=5)
-        ttk.Label(main_frame, text="(comma-separated)", font=('Arial', 8, 'italic')).grid(
-            row=row+1, column=1, sticky='w', pady=(0, 5))
+        ttk.Label(main_frame, text="(comma-separated, e.g.: pump, hydraulic, motor)",
+                 font=('Arial', 8)).grid(row=row+1, column=1, sticky='w')
         row += 2
 
+        # Notes
         ttk.Label(main_frame, text="Notes:").grid(row=row, column=0, sticky='nw', pady=5)
         notes_text = tk.Text(main_frame, width=50, height=3, wrap='word')
         notes_text.grid(row=row, column=1, sticky='ew', pady=5)
@@ -392,7 +372,7 @@ class ManualsManager:
                         (title, description, category, sap_number, bfm_number,
                          equipment_name, file_name, file_extension, file_data,
                          file_size, uploaded_by, tags, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         title_entry.get().strip(),
                         description_text.get('1.0', 'end-1c').strip(),
@@ -439,7 +419,7 @@ class ManualsManager:
                 rows = cursor.fetchall()
 
                 for row in rows:
-                    # Access columns by name (RealDictCursor returns dict-like rows)
+                    # Access columns by name (dict-like rows)
                     manual_id = row['id']
                     title = row['title']
                     description = row['description']
@@ -457,7 +437,7 @@ class ManualsManager:
                     size_kb = f"{int(file_size) / 1024:.1f}" if file_size else "0"
 
                     # Format date
-                    date_str = upload_date.strftime('%Y-%m-%d %H:%M') if upload_date else ''
+                    date_str = str(upload_date)[:16] if upload_date else ''
 
                     # Truncate long descriptions
                     desc_display = (description[:50] + '...') if description and len(description) > 50 else (description or '')
@@ -514,29 +494,29 @@ class ManualsManager:
 
                 if search_text:
                     query += ''' AND (
-                        LOWER(title) LIKE %s OR
-                        LOWER(description) LIKE %s OR
-                        LOWER(equipment_name) LIKE %s OR
-                        LOWER(file_name) LIKE %s OR
-                        LOWER(tags) LIKE %s
+                        LOWER(title) LIKE ? OR
+                        LOWER(description) LIKE ? OR
+                        LOWER(equipment_name) LIKE ? OR
+                        LOWER(file_name) LIKE ? OR
+                        LOWER(tags) LIKE ?
                     )'''
                     search_param = f'%{search_text}%'
                     params.extend([search_param] * 5)
 
                 if sap_text:
-                    query += ' AND LOWER(sap_number) LIKE %s'
+                    query += ' AND LOWER(sap_number) LIKE ?'
                     params.append(f'%{sap_text}%')
 
                 if bfm_text:
-                    query += ' AND LOWER(bfm_number) LIKE %s'
+                    query += ' AND LOWER(bfm_number) LIKE ?'
                     params.append(f'%{bfm_text}%')
 
                 if category != 'All':
-                    query += ' AND category = %s'
+                    query += ' AND category = ?'
                     params.append(category)
 
                 if status != 'All':
-                    query += ' AND status = %s'
+                    query += ' AND status = ?'
                     params.append(status)
 
                 query += ' ORDER BY upload_date DESC'
@@ -545,7 +525,7 @@ class ManualsManager:
                 rows = cursor.fetchall()
 
                 for row in rows:
-                    # Access columns by name (RealDictCursor returns dict-like rows)
+                    # Access columns by name (dict-like rows)
                     manual_id = row['id']
                     title = row['title']
                     description = row['description']
@@ -560,7 +540,7 @@ class ManualsManager:
                     status = row['status']
 
                     size_kb = f"{int(file_size) / 1024:.1f}" if file_size else "0"
-                    date_str = upload_date.strftime('%Y-%m-%d %H:%M') if upload_date else ''
+                    date_str = str(upload_date)[:16] if upload_date else ''
                     desc_display = (description[:50] + '...') if description and len(description) > 50 else (description or '')
 
                     self.manuals_tree.insert('', 'end', values=(
@@ -602,7 +582,7 @@ class ManualsManager:
                 cursor.execute('''
                     SELECT file_name, file_extension, file_data
                     FROM equipment_manuals
-                    WHERE id = %s
+                    WHERE id = ?
                 ''', (manual_id,))
 
                 row = cursor.fetchone()
@@ -640,7 +620,7 @@ class ManualsManager:
                 cursor.execute('''
                     SELECT file_name, file_extension, file_data
                     FROM equipment_manuals
-                    WHERE id = %s
+                    WHERE id = ?
                 ''', (manual_id,))
 
                 row = cursor.fetchone()
@@ -680,7 +660,7 @@ class ManualsManager:
                 cursor.execute('''
                     SELECT file_name, file_extension, file_data, title
                     FROM equipment_manuals
-                    WHERE id = %s
+                    WHERE id = ?
                 ''', (manual_id,))
 
                 row = cursor.fetchone()
@@ -726,7 +706,7 @@ class ManualsManager:
                     SELECT title, description, category, sap_number, bfm_number,
                            equipment_name, tags, notes, status
                     FROM equipment_manuals
-                    WHERE id = %s
+                    WHERE id = ?
                 ''', (manual_id,))
 
                 row = cursor.fetchone()
@@ -837,11 +817,11 @@ class ManualsManager:
                     with self.db_pool.get_cursor() as cursor:
                         cursor.execute('''
                             UPDATE equipment_manuals
-                            SET title = %s, description = %s, category = %s,
-                                sap_number = %s, bfm_number = %s, equipment_name = %s,
-                                tags = %s, notes = %s, status = %s,
+                            SET title = ?, description = ?, category = ?,
+                                sap_number = ?, bfm_number = ?, equipment_name = ?,
+                                tags = ?, notes = ?, status = ?,
                                 last_updated = CURRENT_TIMESTAMP
-                            WHERE id = %s
+                            WHERE id = ?
                         ''', (
                             title_entry.get().strip(),
                             description_text.get('1.0', 'end-1c').strip() or None,
@@ -890,7 +870,7 @@ class ManualsManager:
 
         try:
             with self.db_pool.get_cursor() as cursor:
-                cursor.execute('DELETE FROM equipment_manuals WHERE id = %s', (manual_id,))
+                cursor.execute('DELETE FROM equipment_manuals WHERE id = ?', (manual_id,))
 
             messagebox.showinfo("Success", "Manual deleted successfully")
             self.refresh_manuals_list()

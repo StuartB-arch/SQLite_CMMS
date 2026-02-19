@@ -3,7 +3,7 @@ Database Migration Script for Multi-User Support
 Adds version columns, creates user management tables, and migrates existing data
 """
 
-import psycopg2
+import sqlite3
 from database_utils import UserManager
 
 
@@ -16,14 +16,11 @@ class MultiUserMigration:
 
     def connect(self):
         """Connect to the database"""
-        self.conn = psycopg2.connect(
-            host=self.db_config['host'],
-            port=self.db_config['port'],
-            database=self.db_config['database'],
-            user=self.db_config['user'],
-            password=self.db_config['password'],
-            sslmode=self.db_config.get('sslmode', 'require')
-        )
+        db_path = self.db_config.get('database', 'cmms.db')
+        self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.autocommit = False
         print("Connected to database successfully")
 
@@ -75,46 +72,46 @@ class MultiUserMigration:
         print("Creating users table...")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 full_name TEXT NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('Manager', 'Technician')),
                 email TEXT,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                created_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_login TEXT,
                 created_by TEXT,
                 notes TEXT
             )
         ''')
-        print("  ✓ Users table created")
+        print("  Users table created")
 
     def create_sessions_table(self, cursor):
         """Create user_sessions table for session tracking"""
         print("Creating user_sessions table...")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_sessions (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 username TEXT NOT NULL,
-                login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                logout_time TIMESTAMP,
-                last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active BOOLEAN DEFAULT TRUE,
+                login_time TEXT DEFAULT CURRENT_TIMESTAMP,
+                logout_time TEXT,
+                last_activity TEXT DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
                 session_data TEXT,
                 FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
-        print("  ✓ User sessions table created")
+        print("  User sessions table created")
 
     def create_audit_log_table(self, cursor):
         """Create audit_log table for tracking all changes"""
         print("Creating audit_log table...")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS audit_log (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_name TEXT NOT NULL,
                 action TEXT NOT NULL,
                 table_name TEXT NOT NULL,
@@ -122,10 +119,10 @@ class MultiUserMigration:
                 old_values TEXT,
                 new_values TEXT,
                 notes TEXT,
-                action_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                action_timestamp TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        print("  ✓ Audit log table created")
+        print("  Audit log table created")
 
     def add_version_columns(self, cursor):
         """Add version columns to existing tables for optimistic locking"""
@@ -145,39 +142,32 @@ class MultiUserMigration:
 
         for table in tables:
             try:
-                # Check if version column already exists
-                cursor.execute(f"""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = '{table}' AND column_name = 'version'
-                """)
+                # Check if version column already exists using PRAGMA
+                cursor.execute(f"PRAGMA table_info({table})")
+                col_names = [r['name'] if isinstance(r, dict) else r[1] for r in cursor.fetchall()]
 
-                if cursor.fetchone() is None:
-                    # Add version column
+                if 'version' not in col_names:
                     cursor.execute(f'''
                         ALTER TABLE {table}
-                        ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1 NOT NULL
+                        ADD COLUMN version INTEGER DEFAULT 1 NOT NULL
                     ''')
-                    print(f"  ✓ Added version column to {table}")
+                    print(f"  Added version column to {table}")
                 else:
-                    print(f"  ✓ Version column already exists in {table}")
+                    print(f"  Version column already exists in {table}")
 
                 # Ensure updated_date column exists
-                cursor.execute(f"""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = '{table}' AND column_name = 'updated_date'
-                """)
+                cursor.execute(f"PRAGMA table_info({table})")
+                col_names = [r['name'] if isinstance(r, dict) else r[1] for r in cursor.fetchall()]
 
-                if cursor.fetchone() is None:
+                if 'updated_date' not in col_names:
                     cursor.execute(f'''
                         ALTER TABLE {table}
-                        ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        ADD COLUMN updated_date TEXT DEFAULT CURRENT_TIMESTAMP
                     ''')
-                    print(f"  ✓ Added updated_date column to {table}")
+                    print(f"  Added updated_date column to {table}")
 
             except Exception as e:
-                print(f"  ⚠ Warning for {table}: {e}")
+                print(f"  Warning for {table}: {e}")
                 # Continue with other tables
 
     def create_default_users(self, cursor):
@@ -187,11 +177,10 @@ class MultiUserMigration:
         # Manager account
         manager_password = UserManager.hash_password("AIT2584")
         cursor.execute("""
-            INSERT INTO users (username, password_hash, full_name, role, created_by)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (username) DO NOTHING
+            INSERT OR IGNORE INTO users (username, password_hash, full_name, role, created_by)
+            VALUES (?, ?, ?, ?, ?)
         """, ('manager', manager_password, 'AIT Manager', 'Manager', 'System'))
-        print("  ✓ Manager account created (username: manager, password: AIT2584)")
+        print("  Manager account created (username: manager, password: AIT2584)")
 
         # Technician accounts
         technicians = [
@@ -208,13 +197,12 @@ class MultiUserMigration:
             password_hash = UserManager.hash_password(username)
 
             cursor.execute("""
-                INSERT INTO users (username, password_hash, full_name, role, created_by)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (username) DO NOTHING
+                INSERT OR IGNORE INTO users (username, password_hash, full_name, role, created_by)
+                VALUES (?, ?, ?, ?, ?)
             """, (username, password_hash, tech_name, 'Technician', 'System'))
 
-        print(f"  ✓ Created {len(technicians)} technician accounts")
-        print("  ℹ Default password for technicians is their username")
+        print(f"  Created {len(technicians)} technician accounts")
+        print("  Default password for technicians is their username")
 
     def create_indexes(self, cursor):
         """Create database indexes for performance"""
@@ -245,21 +233,16 @@ class MultiUserMigration:
                     CREATE INDEX IF NOT EXISTS {index_name}
                     ON {table_name} ({column_name})
                 """)
-                print(f"  ✓ Created index {index_name}")
+                print(f"  Created index {index_name}")
             except Exception as e:
-                print(f"  ⚠ Warning creating {index_name}: {e}")
+                print(f"  Warning creating {index_name}: {e}")
 
 
 def main():
     """Main migration function"""
     # Database configuration
     DB_CONFIG = {
-        'host': 'ep-tiny-paper-ad8glt26-pooler.c-2.us-east-1.aws.neon.tech',
-        'port': 5432,
-        'database': 'neondb',
-        'user': 'neondb_owner',
-        'password': 'npg_2Nm6hyPVWiIH',
-        'sslmode': 'require'
+        'database': 'cmms.db'
     }
 
     # Run migration
@@ -270,15 +253,15 @@ def main():
     print("MIGRATION SUMMARY")
     print("=" * 60)
     print("\nNew Tables Created:")
-    print("  • users - User authentication and management")
-    print("  • user_sessions - Active user session tracking")
-    print("  • audit_log - Complete audit trail of all changes")
+    print("  users - User authentication and management")
+    print("  user_sessions - Active user session tracking")
+    print("  audit_log - Complete audit trail of all changes")
     print("\nColumns Added:")
-    print("  • version - Added to all data tables for concurrency control")
-    print("  • updated_date - Timestamp tracking for all tables")
+    print("  version - Added to all data tables for concurrency control")
+    print("  updated_date - Timestamp tracking for all tables")
     print("\nDefault Users Created:")
-    print("  • Manager: username='manager', password='AIT2584'")
-    print("  • Technicians: username from name, password=username")
+    print("  Manager: username='manager', password='AIT2584'")
+    print("  Technicians: username from name, password=username")
     print("    (e.g., Mark Michaels: username='mmichaels', password='mmichaels')")
     print("\nNext Steps:")
     print("  1. Test login with new credentials")

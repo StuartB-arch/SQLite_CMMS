@@ -81,15 +81,15 @@ class EquipmentHistory:
             SELECT completion_date, pm_type, technician_name, labor_hours,
                    notes, special_equipment
             FROM pm_completions
-            WHERE bfm_equipment_no = %s
+            WHERE bfm_equipment_no = ?
         '''
         params = [bfm_no]
 
         if start_date:
-            query += ' AND completion_date >= %s'
+            query += ' AND completion_date >= ?'
             params.append(start_date)
         if end_date:
-            query += ' AND completion_date <= %s'
+            query += ' AND completion_date <= ?'
             params.append(end_date)
 
         query += ' ORDER BY completion_date DESC'
@@ -119,15 +119,15 @@ class EquipmentHistory:
             SELECT cm_number, reported_date, closed_date, description, priority,
                    status, assigned_technician, labor_hours, notes, notes
             FROM corrective_maintenance
-            WHERE bfm_equipment_no = %s
+            WHERE bfm_equipment_no = ?
         '''
         params = [bfm_no]
 
         if start_date:
-            query += ' AND reported_date >= %s'
+            query += ' AND reported_date >= ?'
             params.append(start_date)
         if end_date:
-            query += ' AND reported_date <= %s'
+            query += ' AND reported_date <= ?'
             params.append(end_date)
 
         query += ' ORDER BY reported_date DESC'
@@ -163,15 +163,15 @@ class EquipmentHistory:
                    cpr.requested_by, cpr.notes, cm.cm_number
             FROM cm_parts_requests cpr
             JOIN corrective_maintenance cm ON cpr.cm_number = cm.cm_number
-            WHERE cm.bfm_equipment_no = %s
+            WHERE cm.bfm_equipment_no = ?
         '''
         params = [bfm_no]
 
         if start_date:
-            query += ' AND cpr.requested_date >= %s'
+            query += ' AND cpr.requested_date >= ?'
             params.append(start_date)
         if end_date:
-            query += ' AND cpr.requested_date <= %s'
+            query += ' AND cpr.requested_date <= ?'
             params.append(end_date)
 
         query += ' ORDER BY cpr.requested_date DESC'
@@ -201,15 +201,15 @@ class EquipmentHistory:
             SELECT timestamp, action, user_id, old_values, new_values
             FROM audit_log
             WHERE table_name = 'equipment'
-            AND record_id = %s
+            AND record_id = ?
         '''
         params = [bfm_no]
 
         if start_date:
-            query += ' AND timestamp >= %s'
+            query += ' AND timestamp >= ?'
             params.append(start_date)
         if end_date:
-            query += ' AND timestamp <= %s'
+            query += ' AND timestamp <= ?'
             params.append(end_date)
 
         query += ' ORDER BY timestamp DESC'
@@ -335,7 +335,7 @@ class EquipmentHistory:
             }
 
             # Get equipment info
-            cursor.execute('SELECT status, monthly_pm, annual_pm FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+            cursor.execute('SELECT status, monthly_pm, annual_pm FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
             equip_row = cursor.fetchone()
             if not equip_row:
                 return metrics
@@ -356,8 +356,8 @@ class EquipmentHistory:
             cursor.execute('''
                 SELECT COUNT(*)
                 FROM pm_completions
-                WHERE bfm_equipment_no = %s
-                AND completion_date >= %s
+                WHERE bfm_equipment_no = ?
+                AND completion_date >= ?
             ''', (bfm_no, one_year_ago))
             completed_pms = cursor.fetchone()[0]
 
@@ -368,8 +368,8 @@ class EquipmentHistory:
             cursor.execute('''
                 SELECT COUNT(*)
                 FROM corrective_maintenance
-                WHERE bfm_equipment_no = %s
-                AND reported_date >= %s
+                WHERE bfm_equipment_no = ?
+                AND reported_date >= ?
             ''', (bfm_no, one_year_ago))
             cm_count = cursor.fetchone()[0]
             metrics['cm_frequency'] = round(cm_count / 12, 1)
@@ -378,16 +378,16 @@ class EquipmentHistory:
             cursor.execute('''
                 SELECT COALESCE(SUM(labor_hours), 0)
                 FROM pm_completions
-                WHERE bfm_equipment_no = %s
-                AND completion_date >= %s
+                WHERE bfm_equipment_no = ?
+                AND completion_date >= ?
             ''', (bfm_no, one_year_ago))
             pm_hours = cursor.fetchone()[0] or 0
 
             cursor.execute('''
                 SELECT COALESCE(SUM(labor_hours), 0)
                 FROM corrective_maintenance
-                WHERE bfm_equipment_no = %s
-                AND reported_date >= %s
+                WHERE bfm_equipment_no = ?
+                AND reported_date >= ?
             ''', (bfm_no, one_year_ago))
             cm_hours = cursor.fetchone()[0] or 0
 
@@ -398,8 +398,8 @@ class EquipmentHistory:
                 SELECT COUNT(*)
                 FROM cm_parts_requests cpr
                 JOIN corrective_maintenance cm ON cpr.cm_number = cm.cm_number
-                WHERE cm.bfm_equipment_no = %s
-                AND cpr.requested_date >= %s
+                WHERE cm.bfm_equipment_no = ?
+                AND cpr.requested_date >= ?
             ''', (bfm_no, one_year_ago))
             metrics['parts_cost'] = 0  # Not available in current schema
             metrics['parts_count'] = cursor.fetchone()[0] or 0
@@ -484,9 +484,9 @@ class EquipmentHistory:
                 cursor.execute('''
                     SELECT COUNT(*)
                     FROM pm_completions
-                    WHERE bfm_equipment_no = %s
-                    AND completion_date >= %s
-                    AND completion_date < %s
+                    WHERE bfm_equipment_no = ?
+                    AND completion_date >= ?
+                    AND completion_date < ?
                 ''', (bfm_no, month_start, month_end))
                 trends['monthly_pm_counts'].append(cursor.fetchone()[0])
 
@@ -494,9 +494,9 @@ class EquipmentHistory:
                 cursor.execute('''
                     SELECT COUNT(*)
                     FROM corrective_maintenance
-                    WHERE bfm_equipment_no = %s
-                    AND reported_date >= %s
-                    AND reported_date < %s
+                    WHERE bfm_equipment_no = ?
+                    AND reported_date >= ?
+                    AND reported_date < ?
                 ''', (bfm_no, month_start, month_end))
                 trends['monthly_cm_counts'].append(cursor.fetchone()[0])
 
@@ -504,18 +504,18 @@ class EquipmentHistory:
                 cursor.execute('''
                     SELECT COALESCE(SUM(labor_hours), 0)
                     FROM pm_completions
-                    WHERE bfm_equipment_no = %s
-                    AND completion_date >= %s
-                    AND completion_date < %s
+                    WHERE bfm_equipment_no = ?
+                    AND completion_date >= ?
+                    AND completion_date < ?
                 ''', (bfm_no, month_start, month_end))
                 pm_hours = cursor.fetchone()[0] or 0
 
                 cursor.execute('''
                     SELECT COALESCE(SUM(labor_hours), 0)
                     FROM corrective_maintenance
-                    WHERE bfm_equipment_no = %s
-                    AND reported_date >= %s
-                    AND reported_date < %s
+                    WHERE bfm_equipment_no = ?
+                    AND reported_date >= ?
+                    AND reported_date < ?
                 ''', (bfm_no, month_start, month_end))
                 cm_hours = cursor.fetchone()[0] or 0
 

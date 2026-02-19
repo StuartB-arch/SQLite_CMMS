@@ -6,8 +6,6 @@ Author: Claude
 Date: 2025-12-09
 """
 
-import psycopg2
-from psycopg2 import extras
 from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
@@ -121,20 +119,24 @@ class KPIQuarterlyCalculator:
         """
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
 
-            placeholders = ','.join(['%s'] * len(periods))
+            placeholders = ','.join(['?'] * len(periods))
             query = f"""
-                SELECT r.*, d.function_code, d.description, d.acceptance_criteria, d.frequency
+                SELECT r.kpi_name, r.measurement_period, r.calculated_value,
+                       r.calculated_text, r.target_value, r.meets_criteria,
+                       r.calculated_by, r.notes, r.calculation_date,
+                       d.function_code, d.description, d.acceptance_criteria, d.frequency
                 FROM kpi_results r
                 JOIN kpi_definitions d ON r.kpi_name = d.kpi_name
-                WHERE r.kpi_name = %s
+                WHERE r.kpi_name = ?
                 AND r.measurement_period IN ({placeholders})
                 ORDER BY r.measurement_period
             """
 
             cursor.execute(query, [kpi_name] + periods)
-            results = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
             cursor.close()
             return results
 
@@ -207,8 +209,8 @@ class KPIQuarterlyCalculator:
         # Determine if quarterly target is met (for average/sum methods)
         if aggregation_method in ['average', 'sum', 'min', 'max']:
             # Check how many months met criteria
-            months_passing = sum(1 for item in monthly_data if item.get('meets_criteria') is True)
-            months_failing = sum(1 for item in monthly_data if item.get('meets_criteria') is False)
+            months_passing = sum(1 for item in monthly_data if item.get('meets_criteria') == 1)
+            months_failing = sum(1 for item in monthly_data if item.get('meets_criteria') == 0)
 
             # Quarter passes if at least 2 out of 3 months passed (majority rule)
             if months_passing + months_failing > 0:
@@ -310,15 +312,15 @@ class KPIQuarterlyCalculator:
                 INSERT INTO kpi_results
                 (kpi_name, measurement_period, calculated_value, calculated_text,
                  target_value, meets_criteria, calculated_by, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (kpi_name, measurement_period)
                 DO UPDATE SET
-                    calculated_value = EXCLUDED.calculated_value,
-                    calculated_text = EXCLUDED.calculated_text,
-                    target_value = EXCLUDED.target_value,
-                    meets_criteria = EXCLUDED.meets_criteria,
-                    calculated_by = EXCLUDED.calculated_by,
-                    notes = EXCLUDED.notes,
+                    calculated_value = excluded.calculated_value,
+                    calculated_text = excluded.calculated_text,
+                    target_value = excluded.target_value,
+                    meets_criteria = excluded.meets_criteria,
+                    calculated_by = excluded.calculated_by,
+                    notes = excluded.notes,
                     calculation_date = CURRENT_TIMESTAMP
             """, (
                 quarterly_result['kpi_name'],
@@ -386,7 +388,7 @@ class KPIQuarterlyCalculator:
                     except Exception as e:
                         print(f"Error saving {kpi_result['kpi_name']}: {str(e)}")
 
-            print(f"✓ Saved {saved_count} quarterly KPIs to database\n")
+            print(f"Saved {saved_count} quarterly KPIs to database\n")
 
         # Print summary
         print(f"Summary:")
@@ -426,17 +428,21 @@ class KPIQuarterlyCalculator:
 
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT r.*, d.function_code, d.description, d.acceptance_criteria, d.frequency
+                SELECT r.kpi_name, r.measurement_period, r.calculated_value,
+                       r.calculated_text, r.target_value, r.meets_criteria,
+                       r.calculated_by, r.notes, r.calculation_date,
+                       d.function_code, d.description, d.acceptance_criteria, d.frequency
                 FROM kpi_results r
                 JOIN kpi_definitions d ON r.kpi_name = d.kpi_name
-                WHERE r.measurement_period = %s
+                WHERE r.measurement_period = ?
                 ORDER BY d.function_code, r.kpi_name
             """, (quarter_label,))
 
-            results = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
             cursor.close()
             return results
 
@@ -452,22 +458,23 @@ class KPIQuarterlyCalculator:
         """
         conn = self.pool.get_connection()
         try:
-            cursor = conn.cursor(cursor_factory=extras.RealDictCursor)
+            cursor = conn.cursor()
 
             cursor.execute("""
                 SELECT DISTINCT measurement_period
                 FROM kpi_results
-                WHERE measurement_period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'
+                WHERE measurement_period LIKE '____-__'
+                AND LENGTH(measurement_period) = 7
                 ORDER BY measurement_period DESC
             """)
 
-            monthly_periods = cursor.fetchall()
+            monthly_periods_raw = cursor.fetchall()
             cursor.close()
 
             # Extract unique quarters
             quarters = set()
-            for row in monthly_periods:
-                period = row['measurement_period']
+            for row in monthly_periods_raw:
+                period = row[0]
                 year, month = map(int, period.split('-'))
                 quarter = ((month - 1) // 3) + 1
                 quarters.add((year, quarter))
@@ -523,9 +530,9 @@ class KPIQuarterlyCalculator:
             else:
                 value_str = f"{kpi['value']:.2f}"
                 if kpi.get('meets_criteria') is True:
-                    status_str = "✓ PASS"
+                    status_str = "PASS"
                 elif kpi.get('meets_criteria') is False:
-                    status_str = "✗ FAIL"
+                    status_str = "FAIL"
                 else:
                     status_str = "N/A"
                 data_points = f"{kpi.get('months_with_data', 0)}/3"
