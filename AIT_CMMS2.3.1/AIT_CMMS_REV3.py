@@ -7015,10 +7015,10 @@ class AITCMMSSystem:
             self.root.destroy()
             return
 
-        # Show login dialog after database pool is ready
-        if not self.show_login_dialog():
-            self.root.destroy()
-            return
+        # Skip login - auto-authenticate as admin
+        self.user_id = 1
+        self.user_name = "Admin"
+        self.current_user_role = "Manager"
 
         # Ensure window is maximized after login
         self.root.update_idletasks()
