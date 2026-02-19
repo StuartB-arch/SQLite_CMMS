@@ -46,7 +46,7 @@ class ManualsManager:
                         equipment_name TEXT,
                         file_name TEXT NOT NULL,
                         file_extension TEXT,
-                        file_data BYTEA NOT NULL,
+                        file_data BLOB NOT NULL,
                         file_size INTEGER,
                         uploaded_by TEXT,
                         upload_date TEXT DEFAULT CURRENT_TIMESTAMP,
