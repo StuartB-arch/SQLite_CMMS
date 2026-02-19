@@ -8,6 +8,8 @@ from mro_stock_module import MROStockManager
 from cm_parts_integration import CMPartsIntegration
 from manuals_module import ManualsManager
 from database_utils import db_pool, UserManager, AuditLogger, OptimisticConcurrencyControl, TransactionManager
+from sqlite_schema_init import initialise_database
+from csv_sync import sync_asset_to_csv, remove_asset_from_csv, get_priority_from_csv, load_priority_map
 from kpi_database_migration import migrate_kpi_database
 from kpi_manager import KPIManager
 from user_management_ui import UserManagementDialog
@@ -17,8 +19,6 @@ import shutil
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import pandas as pd
-import psycopg2
-from psycopg2 import sql, extras
 from datetime import datetime, timedelta
 import json
 import os
@@ -210,8 +210,8 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, completion_date, technician_name
             FROM pm_completions
-            WHERE bfm_equipment_no = %s
-            AND completion_date::DATE >= CURRENT_DATE - INTERVAL '%s days'
+            WHERE bfm_equipment_no = ?
+            AND completion_date >= date('now', '-' || ? || ' days')
             ORDER BY completion_date DESC
         ''', (bfm_no, days))
 
@@ -249,7 +249,7 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, completion_date, technician_name
             FROM pm_completions
-            WHERE completion_date::DATE >= CURRENT_DATE - INTERVAL '%s days'
+            WHERE completion_date >= date('now', '-' || ? || ' days')
             ORDER BY bfm_equipment_no, completion_date DESC
         ''', (days,))
 
@@ -298,13 +298,13 @@ class CompletionRecordRepository:
             cursor.execute('''
                 SELECT bfm_equipment_no, pm_type, assigned_technician, status
                 FROM weekly_pm_schedules
-                WHERE week_start_date = %s AND bfm_equipment_no = %s
+                WHERE week_start_date = ? AND bfm_equipment_no = ?
             ''', (week_start.strftime('%Y-%m-%d'), bfm_no))
         else:
             cursor.execute('''
                 SELECT bfm_equipment_no, pm_type, assigned_technician, status
                 FROM weekly_pm_schedules
-                WHERE week_start_date = %s
+                WHERE week_start_date = ?
             ''', (week_start.strftime('%Y-%m-%d'),))
 
         return [{'bfm_no': row[0], 'pm_type': row[1], 'technician': row[2], 'status': row[3]}
@@ -317,7 +317,7 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, assigned_technician, status
             FROM weekly_pm_schedules
-            WHERE week_start_date = %s
+            WHERE week_start_date = ?
         ''', (week_start.strftime('%Y-%m-%d'),))
 
         # Group scheduled PMs by equipment
@@ -347,7 +347,7 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, week_start_date, assigned_technician, status, scheduled_date
             FROM weekly_pm_schedules
-            WHERE week_start_date < %s
+            WHERE week_start_date < ?
             AND status = 'Scheduled'
             ORDER BY bfm_equipment_no, pm_type, week_start_date DESC
         ''', (before_week.strftime('%Y-%m-%d'),))
@@ -392,9 +392,9 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT week_start_date, assigned_technician, status, scheduled_date
             FROM weekly_pm_schedules
-            WHERE bfm_equipment_no = %s
-            AND pm_type = %s
-            AND week_start_date < %s
+            WHERE bfm_equipment_no = ?
+            AND pm_type = ?
+            AND week_start_date < ?
             AND status = 'Scheduled'
             ORDER BY week_start_date DESC
             LIMIT 5
@@ -417,7 +417,7 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT COUNT(*)
             FROM weekly_pm_schedules
-            WHERE week_start_date = %s AND status = 'Completed'
+            WHERE week_start_date = ? AND status = 'Completed'
         ''', (week_start.strftime('%Y-%m-%d'),))
 
         result = cursor.fetchone()
@@ -477,7 +477,7 @@ class PMEligibilityChecker:
                 next_annual_str = self._next_annual_cache.get(equipment.bfm_no)
             else:
                 cursor = self.completion_repo.conn.cursor()
-                cursor.execute('SELECT next_annual_pm FROM equipment WHERE bfm_equipment_no = %s', (equipment.bfm_no,))
+                cursor.execute('SELECT next_annual_pm FROM equipment WHERE bfm_equipment_no = ?', (equipment.bfm_no,))
                 result = cursor.fetchone()
                 next_annual_str = result[0] if result and result[0] else None
 
@@ -964,7 +964,7 @@ class PMSchedulingService:
             # Clear existing assignments for this week
             print(f"DEBUG: Deleting existing schedules for week {week_start_str}...")
             cursor.execute(
-                'DELETE FROM weekly_pm_schedules WHERE week_start_date = %s',
+                'DELETE FROM weekly_pm_schedules WHERE week_start_date = ?',
                 (week_start_str,)
             )
 
@@ -1052,7 +1052,7 @@ class PMSchedulingService:
             AND bfm_equipment_no NOT IN (
                 SELECT DISTINCT bfm_equipment_no FROM deactivated_assets
             )
-            AND (weekly_pm = TRUE OR monthly_pm = TRUE OR six_month_pm = TRUE OR annual_pm = TRUE)
+            AND (weekly_pm = 1 OR monthly_pm = 1 OR six_month_pm = 1 OR annual_pm = 1)
             ORDER BY bfm_equipment_no
         ''')
 
@@ -1140,7 +1140,7 @@ class PMSchedulingService:
         cursor.executemany('''
             INSERT INTO weekly_pm_schedules
             (week_start_date, bfm_equipment_no, pm_type, assigned_technician, scheduled_date)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (?, ?, ?, ?, ?)
         ''', batch_insert_data)
 
         print(f"DEBUG: Finished assigning all {total_assignments} PMs")
@@ -1267,15 +1267,15 @@ class DateStandardizer:
                         values = []
                         
                         for col, new_value in updates_needed.items():
-                            update_parts.append(f'{col} = %s')
+                            update_parts.append(f'{col} = ?')
                             values.append(new_value)
                         
                         # Identify primary key or unique identifier
                         if table == 'equipment':
-                            where_clause = 'bfm_equipment_no = %s'
+                            where_clause = 'bfm_equipment_no = ?'
                             values.append(row_dict['bfm_equipment_no'])
                         elif 'id' in row_dict:
-                            where_clause = 'id = %s'
+                            where_clause = 'id = ?'
                             values.append(row_dict['id'])
                         else:
                             # Skip if no clear identifier
@@ -1380,12 +1380,12 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND pm_due_date IS NOT NULL
             AND pm_due_date != ''
-            AND EXTRACT(YEAR FROM pm_due_date::date) = %s
-            AND EXTRACT(MONTH FROM pm_due_date::date) = %s
+            AND CAST(strftime('%Y', pm_due_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', pm_due_date) AS INTEGER) = ?
             AND pm_type NOT IN ('CANNOT FIND', 'Cannot Find', 'Run to Failure', 'RTF')
         ''', (year, month, year, month))
 
@@ -1403,13 +1403,13 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (
                 pm_due_date IS NULL
                 OR pm_due_date = ''
-                OR EXTRACT(YEAR FROM pm_due_date::date) != %s
-                OR EXTRACT(MONTH FROM pm_due_date::date) != %s
+                OR CAST(strftime('%Y', pm_due_date) AS INTEGER) != ?
+                OR CAST(strftime('%m', pm_due_date) AS INTEGER) != ?
             )
             AND pm_type NOT IN ('CANNOT FIND', 'Cannot Find', 'Run to Failure', 'RTF')
         ''', (year, month, year, month))
@@ -1423,8 +1423,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(DISTINCT bfm_equipment_no)
             FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM reported_date::date) = %s
-            AND EXTRACT(MONTH FROM reported_date::date) = %s
+            WHERE CAST(strftime('%Y', reported_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', reported_date) AS INTEGER) = ?
             AND status = 'Missing'
         ''', (year, month))
 
@@ -1434,8 +1434,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT bfm_equipment_no, description, location, reported_date, technician_name, reported_by
             FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM reported_date::date) = %s
-            AND EXTRACT(MONTH FROM reported_date::date) = %s
+            WHERE CAST(strftime('%Y', reported_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', reported_date) AS INTEGER) = ?
             AND status = 'Missing'
             ORDER BY reported_date DESC
         ''', (year, month))
@@ -1446,8 +1446,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM found_date::date) = %s
-            AND EXTRACT(MONTH FROM found_date::date) = %s
+            WHERE CAST(strftime('%Y', found_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', found_date) AS INTEGER) = ?
             AND status = 'Found'
         ''', (year, month))
 
@@ -1457,8 +1457,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT bfm_equipment_no, description, location, reported_date, found_date, found_by
             FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM found_date::date) = %s
-            AND EXTRACT(MONTH FROM found_date::date) = %s
+            WHERE CAST(strftime('%Y', found_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', found_date) AS INTEGER) = ?
             AND status = 'Found'
             ORDER BY found_date DESC
         ''', (year, month))
@@ -1469,8 +1469,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM run_to_failure_assets
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
         ''', (year, month))
 
         rtf_count = cursor.fetchone()[0] or 0
@@ -1479,8 +1479,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM deactivated_assets
-            WHERE EXTRACT(YEAR FROM deactivated_date::date) = %s
-            AND EXTRACT(MONTH FROM deactivated_date::date) = %s
+            WHERE CAST(strftime('%Y', deactivated_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', deactivated_date) AS INTEGER) = ?
             AND status = 'Deactivated'
         ''', (year, month))
 
@@ -1491,8 +1491,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM created_date::date) = %s
-            AND EXTRACT(MONTH FROM created_date::date) = %s
+            WHERE CAST(strftime('%Y', created_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', created_date) AS INTEGER) = ?
         ''', (year, month))
 
         cms_created = cursor.fetchone()[0] or 0
@@ -1501,8 +1501,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month))
 
@@ -1512,10 +1512,10 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM created_date::date) = %s
-            AND EXTRACT(MONTH FROM created_date::date) = %s
-            AND EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', created_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', created_date) AS INTEGER) = ?
+            AND CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month, year, month))
 
@@ -1525,9 +1525,9 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE (EXTRACT(YEAR FROM created_date::date) != %s OR EXTRACT(MONTH FROM created_date::date) != %s)
-            AND EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE (CAST(strftime('%Y', created_date) AS INTEGER) != ? OR CAST(strftime('%m', created_date) AS INTEGER) != ?)
+            AND CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month, year, month))
 
@@ -1544,10 +1544,10 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE created_date::date <= %s::date
+            WHERE created_date <= ?
             AND (
                 status = 'Open'
-                OR (status IN ('Closed', 'Completed') AND completion_date::date > %s::date)
+                OR (status IN ('Closed', 'Completed') AND completion_date > ?)
             )
         ''', (month_end_date, month_end_date))
 
@@ -1557,13 +1557,13 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         # Calculate days open from creation to the end of the reporting month
         cursor.execute('''
             SELECT
-                SUM(%s::date - created_date::date) as total_days_open,
-                AVG(%s::date - created_date::date) as avg_days_open
+                SUM(? - created_date) as total_days_open,
+                AVG(? - created_date) as avg_days_open
             FROM corrective_maintenance
-            WHERE created_date::date <= %s::date
+            WHERE created_date <= ?
             AND (
                 status = 'Open'
-                OR (status IN ('Closed', 'Completed') AND completion_date::date > %s::date)
+                OR (status IN ('Closed', 'Completed') AND completion_date > ?)
             )
         ''', (month_end_date, month_end_date, month_end_date, month_end_date))
 
@@ -1577,8 +1577,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours) as total_hours,
                 AVG(labor_hours) as avg_hours
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month))
 
@@ -1589,11 +1589,11 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         # Get total days open for CMs closed this month (time to close)
         cursor.execute('''
             SELECT
-                SUM(completion_date::date - created_date::date) as total_days_to_close,
-                AVG(completion_date::date - created_date::date) as avg_days_to_close
+                SUM(completion_date - created_date) as total_days_to_close,
+                AVG(completion_date - created_date) as avg_days_to_close
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month))
 
@@ -1630,12 +1630,12 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     cm.bfm_equipment_no,
                     cm.description,
                     cm.priority,
-                    (cm.completion_date::date - cm.created_date::date) as days_to_close,
+                    (cm.completion_date - cm.created_date) as days_to_close,
                     cm.root_cause,
                     cm.corrective_action
                 FROM corrective_maintenance cm
-                WHERE EXTRACT(YEAR FROM cm.completion_date::date) = %s
-                AND EXTRACT(MONTH FROM cm.completion_date::date) = %s
+                WHERE CAST(strftime('%Y', cm.completion_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', cm.completion_date) AS INTEGER) = ?
                 AND (cm.status = 'Closed' OR cm.status = 'Completed')
                 ORDER BY cm.completion_date
             ''', (year, month))
@@ -1687,7 +1687,7 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                         mro.unit_of_measure
                     FROM cm_parts_used cpu
                     LEFT JOIN mro_inventory mro ON cpu.part_number = mro.part_number
-                    WHERE cpu.cm_number = %s
+                    WHERE cpu.cm_number = ?
                     ORDER BY cpu.recorded_date
                 ''', (cm_number,))
 
@@ -1788,7 +1788,7 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     cm.bfm_equipment_no,
                     cm.description,
                     cm.priority,
-                    (CURRENT_DATE - cm.created_date::date) as days_open
+                    (CURRENT_DATE - cm.created_date) as days_open
                 FROM corrective_maintenance cm
                 WHERE cm.status = 'Open'
                 ORDER BY cm.created_date
@@ -1830,7 +1830,7 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                         mro.unit_of_measure
                     FROM cm_parts_used cpu
                     LEFT JOIN mro_inventory mro ON cpu.part_number = mro.part_number
-                    WHERE cpu.cm_number = %s
+                    WHERE cpu.cm_number = ?
                     ORDER BY cpu.recorded_date
                 ''', (cm_number,))
 
@@ -1877,9 +1877,9 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     completion_date,
                     assigned_technician
                 FROM corrective_maintenance 
-                WHERE (EXTRACT(YEAR FROM created_date::date) != %s OR EXTRACT(MONTH FROM created_date::date) != %s)
-                AND EXTRACT(YEAR FROM completion_date::date) = %s
-                AND EXTRACT(MONTH FROM completion_date::date) = %s
+                WHERE (CAST(strftime('%Y', created_date) AS INTEGER) != ? OR CAST(strftime('%m', created_date) AS INTEGER) != ?)
+                AND CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
                 AND (status = 'Closed' OR status = 'Completed')
                 ORDER BY completion_date
             ''', (year, month, year, month))
@@ -1916,13 +1916,13 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     labor_minutes,
                     notes
                 FROM pm_completions
-                WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-                AND EXTRACT(MONTH FROM completion_date::date) = %s
+                WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
                 AND (
                     pm_due_date IS NULL
                     OR pm_due_date = ''
-                    OR EXTRACT(YEAR FROM pm_due_date::date) != %s
-                    OR EXTRACT(MONTH FROM pm_due_date::date) != %s
+                    OR CAST(strftime('%Y', pm_due_date) AS INTEGER) != ?
+                    OR CAST(strftime('%m', pm_due_date) AS INTEGER) != ?
                 )
                 AND pm_type NOT IN ('CANNOT FIND', 'Cannot Find', 'Run to Failure', 'RTF')
                 ORDER BY technician_name, completion_date
@@ -2037,8 +2037,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             GROUP BY pm_type
             ORDER BY count DESC
         ''', (year, month))
@@ -2064,8 +2064,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 COUNT(*) as daily_count,
                 SUM(labor_hours + labor_minutes/60.0) as daily_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             GROUP BY completion_date
             ORDER BY completion_date
         ''', (year, month))
@@ -2095,8 +2095,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             GROUP BY technician_name
             ORDER BY completions DESC
         ''', (year, month))
@@ -2111,8 +2111,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 assigned_technician,
                 COUNT(*) as assigned_count
             FROM weekly_pm_schedules
-            WHERE EXTRACT(YEAR FROM scheduled_date::date) = %s
-            AND EXTRACT(MONTH FROM scheduled_date::date) = %s
+            WHERE CAST(strftime('%Y', scheduled_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', scheduled_date) AS INTEGER) = ?
             AND assigned_technician IS NOT NULL
             AND assigned_technician != ''
             GROUP BY assigned_technician
@@ -2126,8 +2126,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 assigned_technician,
                 COUNT(*) as cannot_find_count
             FROM weekly_pm_schedules
-            WHERE EXTRACT(YEAR FROM scheduled_date::date) = %s
-            AND EXTRACT(MONTH FROM scheduled_date::date) = %s
+            WHERE CAST(strftime('%Y', scheduled_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', scheduled_date) AS INTEGER) = ?
             AND status = 'Cannot Find'
             AND assigned_technician IS NOT NULL
             AND assigned_technician != ''
@@ -2183,8 +2183,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 priority,
                 COUNT(*) as count
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM created_date::date) = %s
-            AND EXTRACT(MONTH FROM created_date::date) = %s
+            WHERE CAST(strftime('%Y', created_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', created_date) AS INTEGER) = ?
             GROUP BY priority
             ORDER BY
                 CASE priority
@@ -2216,8 +2216,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours) as total_hours,
                 AVG(labor_hours) as avg_hours
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
             GROUP BY priority
             ORDER BY
@@ -2252,8 +2252,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(labor_hours) as total_hours,
                 AVG(labor_hours) as avg_hours
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
             GROUP BY assigned_technician
             ORDER BY completed DESC
@@ -2281,8 +2281,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                 SUM(pc.labor_hours + pc.labor_minutes/60.0) as total_hours
             FROM pm_completions pc
             JOIN equipment e ON pc.bfm_equipment_no = e.bfm_equipment_no
-            WHERE EXTRACT(YEAR FROM pc.completion_date::date) = %s
-            AND EXTRACT(MONTH FROM pc.completion_date::date) = %s
+            WHERE CAST(strftime('%Y', pc.completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', pc.completion_date) AS INTEGER) = ?
             GROUP BY e.location
             ORDER BY completions DESC
         ''', (year, month))
@@ -2312,8 +2312,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM equipment_missing_parts
-            WHERE EXTRACT(YEAR FROM reported_date::date) = %s
-            AND EXTRACT(MONTH FROM reported_date::date) = %s
+            WHERE CAST(strftime('%Y', reported_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', reported_date) AS INTEGER) = ?
         ''', (year, month))
 
         emp_reported = cursor.fetchone()[0] or 0
@@ -2322,8 +2322,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM equipment_missing_parts
-            WHERE EXTRACT(YEAR FROM closed_date::date) = %s
-            AND EXTRACT(MONTH FROM closed_date::date) = %s
+            WHERE CAST(strftime('%Y', closed_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', closed_date) AS INTEGER) = ?
             AND status = 'Closed'
         ''', (year, month))
 
@@ -2362,8 +2362,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     reported_date,
                     status
                 FROM equipment_missing_parts
-                WHERE EXTRACT(YEAR FROM reported_date::date) = %s
-                AND EXTRACT(MONTH FROM reported_date::date) = %s
+                WHERE CAST(strftime('%Y', reported_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', reported_date) AS INTEGER) = ?
                 ORDER BY reported_date
             ''', (year, month))
 
@@ -2418,8 +2418,8 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     closed_date,
                     closed_by
                 FROM equipment_missing_parts
-                WHERE EXTRACT(YEAR FROM closed_date::date) = %s
-                AND EXTRACT(MONTH FROM closed_date::date) = %s
+                WHERE CAST(strftime('%Y', closed_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', closed_date) AS INTEGER) = ?
                 AND status = 'Closed'
                 ORDER BY closed_date
             ''', (year, month))
@@ -2478,7 +2478,7 @@ def generate_monthly_summary_report(conn, month=None, year=None):
                     priority,
                     assigned_technician,
                     reported_date,
-                    (CURRENT_DATE - reported_date::date) as days_open
+                    (CURRENT_DATE - reported_date) as days_open
                 FROM equipment_missing_parts
                 WHERE status = 'Open'
                 ORDER BY reported_date
@@ -2688,12 +2688,12 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND pm_due_date IS NOT NULL
             AND pm_due_date != ''
-            AND EXTRACT(YEAR FROM pm_due_date::date) = %s
-            AND EXTRACT(MONTH FROM pm_due_date::date) = %s
+            AND CAST(strftime('%Y', pm_due_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', pm_due_date) AS INTEGER) = ?
             AND pm_type NOT IN ('CANNOT FIND', 'Cannot Find', 'Run to Failure', 'RTF')
         ''', (year, month, year, month))
 
@@ -2710,13 +2710,13 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (
                 pm_due_date IS NULL
                 OR pm_due_date = ''
-                OR EXTRACT(YEAR FROM pm_due_date::date) != %s
-                OR EXTRACT(MONTH FROM pm_due_date::date) != %s
+                OR CAST(strftime('%Y', pm_due_date) AS INTEGER) != ?
+                OR CAST(strftime('%m', pm_due_date) AS INTEGER) != ?
             )
             AND pm_type NOT IN ('CANNOT FIND', 'Cannot Find', 'Run to Failure', 'RTF')
         ''', (year, month, year, month))
@@ -2729,13 +2729,13 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         # Get CM data
         cursor.execute('''
             SELECT COUNT(*) FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM created_date::date) = %s AND EXTRACT(MONTH FROM created_date::date) = %s
+            WHERE CAST(strftime('%Y', created_date) AS INTEGER) = ? AND CAST(strftime('%m', created_date) AS INTEGER) = ?
         ''', (year, month))
         cms_created = cursor.fetchone()[0] or 0
 
         cursor.execute('''
             SELECT COUNT(*) FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s  AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?  AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month))
         cms_closed = cursor.fetchone()[0] or 0
@@ -2743,8 +2743,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         # Get Cannot Find data for this month (reported missing)
         cursor.execute('''
             SELECT COUNT(DISTINCT bfm_equipment_no) FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM reported_date::date) = %s
-            AND EXTRACT(MONTH FROM reported_date::date) = %s
+            WHERE CAST(strftime('%Y', reported_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', reported_date) AS INTEGER) = ?
             AND status = 'Missing'
         ''', (year, month))
         cf_count = cursor.fetchone()[0] or 0
@@ -2753,8 +2753,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         cursor.execute('''
             SELECT bfm_equipment_no, description, location, reported_date, technician_name, reported_by
             FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM reported_date::date) = %s
-            AND EXTRACT(MONTH FROM reported_date::date) = %s
+            WHERE CAST(strftime('%Y', reported_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', reported_date) AS INTEGER) = ?
             AND status = 'Missing'
             ORDER BY reported_date DESC
         ''', (year, month))
@@ -2763,8 +2763,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         # Get Mark as Found data for this month
         cursor.execute('''
             SELECT COUNT(*) FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM found_date::date) = %s
-            AND EXTRACT(MONTH FROM found_date::date) = %s
+            WHERE CAST(strftime('%Y', found_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', found_date) AS INTEGER) = ?
             AND status = 'Found'
         ''', (year, month))
         found_count = cursor.fetchone()[0] or 0
@@ -2773,8 +2773,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         cursor.execute('''
             SELECT bfm_equipment_no, description, location, reported_date, found_date, found_by
             FROM cannot_find_assets
-            WHERE EXTRACT(YEAR FROM found_date::date) = %s
-            AND EXTRACT(MONTH FROM found_date::date) = %s
+            WHERE CAST(strftime('%Y', found_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', found_date) AS INTEGER) = ?
             AND status = 'Found'
             ORDER BY found_date DESC
         ''', (year, month))
@@ -2784,8 +2784,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM run_to_failure_assets
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
         ''', (year, month))
         rtf_count = cursor.fetchone()[0] or 0
 
@@ -2793,8 +2793,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM deactivated_assets
-            WHERE EXTRACT(YEAR FROM deactivated_date::date) = %s
-            AND EXTRACT(MONTH FROM deactivated_date::date) = %s
+            WHERE CAST(strftime('%Y', deactivated_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', deactivated_date) AS INTEGER) = ?
             AND status = 'Deactivated'
         ''', (year, month))
         deactivated_count = cursor.fetchone()[0] or 0
@@ -2852,13 +2852,13 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                     labor_hours,
                     labor_minutes
                 FROM pm_completions
-                WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-                AND EXTRACT(MONTH FROM completion_date::date) = %s
+                WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
                 AND (
                     pm_due_date IS NULL
                     OR pm_due_date = ''
-                    OR EXTRACT(YEAR FROM pm_due_date::date) != %s
-                    OR EXTRACT(MONTH FROM pm_due_date::date) != %s
+                    OR CAST(strftime('%Y', pm_due_date) AS INTEGER) != ?
+                    OR CAST(strftime('%m', pm_due_date) AS INTEGER) != ?
                 )
                 AND pm_type NOT IN ('CANNOT FIND', 'Cannot Find', 'Run to Failure', 'RTF')
                 ORDER BY technician_name, completion_date
@@ -2922,16 +2922,16 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         # Get CM breakdown
         cursor.execute('''
             SELECT COUNT(*) FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM created_date::date) = %s AND EXTRACT(MONTH FROM created_date::date) = %s
-            AND EXTRACT(YEAR FROM completion_date::date) = %s AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', created_date) AS INTEGER) = ? AND CAST(strftime('%m', created_date) AS INTEGER) = ?
+            AND CAST(strftime('%Y', completion_date) AS INTEGER) = ? AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month, year, month))
         cms_created_and_closed = cursor.fetchone()[0] or 0
 
         cursor.execute('''
             SELECT COUNT(*) FROM corrective_maintenance
-            WHERE (EXTRACT(YEAR FROM created_date::date) != %s OR EXTRACT(MONTH FROM created_date::date) != %s)
-            AND EXTRACT(YEAR FROM completion_date::date) = %s AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE (CAST(strftime('%Y', created_date) AS INTEGER) != ? OR CAST(strftime('%m', created_date) AS INTEGER) != ?)
+            AND CAST(strftime('%Y', completion_date) AS INTEGER) = ? AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month, year, month))
         cms_closed_from_before = cursor.fetchone()[0] or 0
@@ -2944,10 +2944,10 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE created_date::date <= %s::date
+            WHERE created_date <= ?
             AND (
                 status = 'Open'
-                OR (status IN ('Closed', 'Completed') AND completion_date::date > %s::date)
+                OR (status IN ('Closed', 'Completed') AND completion_date > ?)
             )
         ''', (month_end_date, month_end_date))
         cms_open_current = cursor.fetchone()[0] or 0
@@ -2955,13 +2955,13 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         # Get total days open for CMs that were open as of the end of the reporting month
         cursor.execute('''
             SELECT
-                SUM(%s::date - created_date::date) as total_days_open,
-                AVG(%s::date - created_date::date) as avg_days_open
+                SUM(? - created_date) as total_days_open,
+                AVG(? - created_date) as avg_days_open
             FROM corrective_maintenance
-            WHERE created_date::date <= %s::date
+            WHERE created_date <= ?
             AND (
                 status = 'Open'
-                OR (status IN ('Closed', 'Completed') AND completion_date::date > %s::date)
+                OR (status IN ('Closed', 'Completed') AND completion_date > ?)
             )
         ''', (month_end_date, month_end_date, month_end_date, month_end_date))
 
@@ -2975,8 +2975,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                 SUM(labor_hours) as total_hours,
                 AVG(labor_hours) as avg_hours
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month))
 
@@ -2987,11 +2987,11 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
         # Get total days open for CMs closed this month (time to close)
         cursor.execute('''
             SELECT
-                SUM(completion_date::date - created_date::date) as total_days_to_close,
-                AVG(completion_date::date - created_date::date) as avg_days_to_close
+                SUM(completion_date - created_date) as total_days_to_close,
+                AVG(completion_date - created_date) as avg_days_to_close
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
         ''', (year, month))
 
@@ -3150,10 +3150,10 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                     cm.bfm_equipment_no,
                     cm.description,
                     cm.priority,
-                    (cm.completion_date::date - cm.created_date::date) as days_to_close
+                    (cm.completion_date - cm.created_date) as days_to_close
                 FROM corrective_maintenance cm
-                WHERE EXTRACT(YEAR FROM cm.completion_date::date) = %s
-                AND EXTRACT(MONTH FROM cm.completion_date::date) = %s
+                WHERE CAST(strftime('%Y', cm.completion_date) AS INTEGER) = ?
+                AND CAST(strftime('%m', cm.completion_date) AS INTEGER) = ?
                 AND (cm.status = 'Closed' OR cm.status = 'Completed')
                 ORDER BY cm.completion_date
             ''', (year, month))
@@ -3225,7 +3225,7 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                         mro.unit_of_measure
                     FROM cm_parts_used cpu
                     LEFT JOIN mro_inventory mro ON cpu.part_number = mro.part_number
-                    WHERE cpu.cm_number = %s
+                    WHERE cpu.cm_number = ?
                     ORDER BY cpu.recorded_date
                 ''', (cm_number,))
 
@@ -3309,8 +3309,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
             cursor.execute('''
                 SELECT cm_number, bfm_equipment_no, created_date, completion_date, assigned_technician
                 FROM corrective_maintenance
-                WHERE (EXTRACT(YEAR FROM created_date::date) != %s OR EXTRACT(MONTH FROM created_date::date) != %s)
-                AND EXTRACT(YEAR FROM completion_date::date) = %s AND EXTRACT(MONTH FROM completion_date::date) = %s
+                WHERE (CAST(strftime('%Y', created_date) AS INTEGER) != ? OR CAST(strftime('%m', created_date) AS INTEGER) != ?)
+                AND CAST(strftime('%Y', completion_date) AS INTEGER) = ? AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
                 AND (status = 'Closed' OR status = 'Completed')
                 ORDER BY completion_date
             ''', (year, month, year, month))
@@ -3366,7 +3366,7 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                     cm.bfm_equipment_no,
                     cm.description,
                     cm.priority,
-                    (CURRENT_DATE - cm.created_date::date) as days_open
+                    (CURRENT_DATE - cm.created_date) as days_open
                 FROM corrective_maintenance cm
                 WHERE cm.status = 'Open'
                 ORDER BY cm.created_date
@@ -3434,7 +3434,7 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                         mro.unit_of_measure
                     FROM cm_parts_used cpu
                     LEFT JOIN mro_inventory mro ON cpu.part_number = mro.part_number
-                    WHERE cpu.cm_number = %s
+                    WHERE cpu.cm_number = ?
                     ORDER BY cpu.recorded_date
                 ''', (cm_number,))
 
@@ -3521,8 +3521,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                 SUM(labor_hours) as total_hours,
                 AVG(labor_hours) as avg_hours
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
             GROUP BY priority
             ORDER BY
@@ -3581,8 +3581,8 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                 SUM(labor_hours) as total_hours,
                 AVG(labor_hours) as avg_hours
             FROM corrective_maintenance
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s
-            AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ?
+            AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             AND (status = 'Closed' OR status = 'Completed')
             GROUP BY assigned_technician
             ORDER BY completed DESC
@@ -3632,7 +3632,7 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
                 SUM(labor_hours + labor_minutes/60.0) as total_hours,
                 AVG(labor_hours + labor_minutes/60.0) as avg_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ? AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             GROUP BY pm_type
             ORDER BY count DESC
         ''', (year, month))
@@ -3680,7 +3680,7 @@ def export_professional_monthly_report_pdf(conn, month=None, year=None):
             SELECT completion_date, COUNT(*) as daily_count,
                 SUM(labor_hours + labor_minutes/60.0) as daily_hours
             FROM pm_completions
-            WHERE EXTRACT(YEAR FROM completion_date::date) = %s AND EXTRACT(MONTH FROM completion_date::date) = %s
+            WHERE CAST(strftime('%Y', completion_date) AS INTEGER) = ? AND CAST(strftime('%m', completion_date) AS INTEGER) = ?
             GROUP BY completion_date
             ORDER BY completion_date
         ''', (year, month))
@@ -4031,8 +4031,8 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT
                     COUNT(*) as total_active,
-                    SUM(CASE WHEN monthly_pm = TRUE THEN 1 ELSE 0 END) as monthly_pm_count,
-                    SUM(CASE WHEN annual_pm = TRUE THEN 1 ELSE 0 END) as annual_pm_count,
+                    SUM(CASE WHEN monthly_pm = 1 THEN 1 ELSE 0 END) as monthly_pm_count,
+                    SUM(CASE WHEN annual_pm = 1 THEN 1 ELSE 0 END) as annual_pm_count,
                     SUM(CASE WHEN status IN ('Run to Failure', 'Missing') THEN 1 ELSE 0 END) as excluded_count
                 FROM equipment
                 WHERE status = 'Active' OR status IS NULL
@@ -4110,7 +4110,7 @@ class AITCMMSSystem:
                 FROM equipment e
                 LEFT JOIN pm_completions pc ON e.bfm_equipment_no = pc.bfm_equipment_no
                 WHERE e.status = 'Active'
-                AND (e.monthly_pm = TRUE OR e.annual_pm = TRUE)
+                AND (e.monthly_pm = 1 OR e.annual_pm = 1)
                 AND pc.bfm_equipment_no IS NULL
             ''')
             never_done = cursor.fetchone()[0]
@@ -4213,7 +4213,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT description, location 
                     FROM equipment 
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (bfm_no,))
             
                 result = cursor.fetchone()
@@ -4264,7 +4264,7 @@ class AITCMMSSystem:
                 cursor = self.conn.cursor()
         
                 # Check if asset already exists in cannot_find_assets
-                cursor.execute('SELECT bfm_equipment_no FROM cannot_find_assets WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute('SELECT bfm_equipment_no FROM cannot_find_assets WHERE bfm_equipment_no = ?', (bfm_no,))
                 existing = cursor.fetchone()
         
                 if existing:
@@ -4278,29 +4278,29 @@ class AITCMMSSystem:
                     # Update existing record
                     cursor.execute('''
                         UPDATE cannot_find_assets 
-                        SET description = %s, location = %s, technician_name = %s, 
-                            reported_date = %s, status = 'Missing', notes = %s
-                        WHERE bfm_equipment_no = %s
+                        SET description = ?, location = ?, technician_name = ?, 
+                            reported_date = ?, status = 'Missing', notes = ?
+                        WHERE bfm_equipment_no = ?
                     ''', (description, location, technician, reported_date, notes, bfm_no))
                 else:
                     # Insert new record
                     cursor.execute('''
                         INSERT INTO cannot_find_assets 
                         (bfm_equipment_no, description, location, technician_name, reported_date, status, notes)
-                        VALUES (%s, %s, %s, %s, %s, 'Missing', %s)
+                        VALUES (?, ?, ?, ?, ?, 'Missing', ?)
                     ''', (bfm_no, description, location, technician, reported_date, notes))
         
                 # Also update the equipment table status if the equipment exists
-                cursor.execute('SELECT bfm_equipment_no FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute('SELECT bfm_equipment_no FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
                 if cursor.fetchone():
-                    cursor.execute('UPDATE equipment SET status = %s WHERE bfm_equipment_no = %s',
+                    cursor.execute('UPDATE equipment SET status = ? WHERE bfm_equipment_no = ?',
                                 ('Cannot Find', bfm_no))
 
                 # Update any scheduled PMs for this asset to "Cannot Find" status
                 cursor.execute('''
                     UPDATE weekly_pm_schedules
                     SET status = 'Cannot Find'
-                    WHERE bfm_equipment_no = %s AND status = 'Scheduled'
+                    WHERE bfm_equipment_no = ? AND status = 'Scheduled'
                 ''', (bfm_no,))
 
                 self.conn.commit()
@@ -4382,7 +4382,7 @@ class AITCMMSSystem:
     
         # Get equipment description
         cursor = self.conn.cursor()
-        cursor.execute('SELECT description FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+        cursor.execute('SELECT description FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
         result = cursor.fetchone()
         equip_desc = result[0] if result else "Unknown"
     
@@ -4457,7 +4457,7 @@ class AITCMMSSystem:
                     INSERT INTO corrective_maintenance 
                     (cm_number, bfm_equipment_no, description, priority, 
                      assigned_technician, status, created_date, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     cm_number_var.get(),
                     bfm_var.get(),
@@ -4522,7 +4522,7 @@ class AITCMMSSystem:
         cursor.execute(
             "SELECT MAX(CAST(SPLIT_PART(cm_number, '-', 3) AS INTEGER)) "
             "FROM corrective_maintenance "
-            "WHERE cm_number LIKE %s",
+            "WHERE cm_number LIKE ?",
             (f'CM-{today}-%',)
         )
         result = cursor.fetchone()
@@ -4620,7 +4620,7 @@ class AITCMMSSystem:
                     cursor.execute('''
                         INSERT INTO cm_parts_requests
                         (cm_number, bfm_equipment_no, part_number, model_number, website, requested_by, requested_date, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (cm_number, bfm_no, part_no, model_no, website, technician_name, today, notes_text.get('1.0', 'end-1c').strip()))
                 self.conn.commit()
             except Exception as e:
@@ -4634,8 +4634,8 @@ class AITCMMSSystem:
                     # Mark sent
                     cursor = self.conn.cursor()
                     cursor.execute('''
-                        UPDATE cm_parts_requests SET email_sent = TRUE, email_sent_at = CURRENT_TIMESTAMP
-                        WHERE cm_number = %s
+                        UPDATE cm_parts_requests SET email_sent = 1, email_sent_at = CURRENT_TIMESTAMP
+                        WHERE cm_number = ?
                     ''', (cm_number,))
                     self.conn.commit()
                     messagebox.showinfo("Sent", "Parts request emailed to Parts Coordinator.")
@@ -5620,7 +5620,7 @@ class AITCMMSSystem:
         # PM Templates table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pm_templates (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 bfm_equipment_no TEXT,
                 template_name TEXT,
                 pm_type TEXT,
@@ -5637,11 +5637,11 @@ class AITCMMSSystem:
         # Default checklist items for fallback
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS default_pm_checklist (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pm_type TEXT,
                 step_number INTEGER,
                 description TEXT,
-                is_active BOOLEAN DEFAULT TRUE,
+                is_active INTEGER DEFAULT 1,
             )
         ''')
     
@@ -5671,7 +5671,7 @@ class AITCMMSSystem:
             for step_num, description in default_items:
                 cursor.execute('''
                     INSERT INTO default_pm_checklist (pm_type, step_number, description)
-                    VALUES ('All', %s, %s)
+                    VALUES ('All', ?, ?)
                 ''', (step_num, description))
     
         self.conn.commit()
@@ -5695,7 +5695,7 @@ class AITCMMSSystem:
             SELECT id, bfm_equipment_no, template_name, pm_type, checklist_items,
                 special_instructions, safety_notes, estimated_hours
             FROM pm_templates
-            WHERE bfm_equipment_no = %s AND template_name = %s AND pm_type = %s
+            WHERE bfm_equipment_no = ? AND template_name = ? AND pm_type = ?
         ''', (bfm_no, template_name, pm_type))
 
         template_data = cursor.fetchone()
@@ -5865,14 +5865,14 @@ class AITCMMSSystem:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                     UPDATE pm_templates SET
-                    template_name = %s,
-                    pm_type = %s,
-                    checklist_items = %s,
-                    special_instructions = %s,
-                    safety_notes = %s,
-                    estimated_hours = %s,
+                    template_name = ?,
+                    pm_type = ?,
+                    checklist_items = ?,
+                    special_instructions = ?,
+                    safety_notes = ?,
+                    estimated_hours = ?,
                     updated_date = CURRENT_TIMESTAMP
-                    WHERE id = %s
+                    WHERE id = ?
                 ''', (
                     template_name_var.get().strip(),
                     pm_type_var.get(),
@@ -6120,7 +6120,7 @@ class AITCMMSSystem:
             SELECT pt.*, e.description, e.sap_material_no, e.location
             FROM pm_templates pt
             LEFT JOIN equipment e ON pt.bfm_equipment_no = e.bfm_equipment_no
-            WHERE pt.bfm_equipment_no = %s AND pt.template_name = %s
+            WHERE pt.bfm_equipment_no = ? AND pt.template_name = ?
         ''', (bfm_no, template_name))
     
         template_data = cursor.fetchone()
@@ -6212,7 +6212,7 @@ class AITCMMSSystem:
                 # MUST filter by pm_type to delete correct template
                 cursor.execute('''
                     DELETE FROM pm_templates
-                    WHERE bfm_equipment_no = %s AND template_name = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND template_name = ? AND pm_type = ?
                 ''', (bfm_no, template_name, pm_type))
 
                 self.conn.commit()
@@ -6245,7 +6245,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT sap_material_no, description, tool_id_drawing_no, location
                 FROM equipment
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
             equipment_data = cursor.fetchone()
 
@@ -6257,7 +6257,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT description
                 FROM default_pm_checklist
-                WHERE is_active = TRUE
+                WHERE is_active = 1
                 ORDER BY step_number
             ''')
             checklist_rows = cursor.fetchall()
@@ -6286,7 +6286,7 @@ class AITCMMSSystem:
                 SELECT pt.*, e.sap_material_no, e.description, e.tool_id_drawing_no, e.location
                 FROM pm_templates pt
                 LEFT JOIN equipment e ON pt.bfm_equipment_no = e.bfm_equipment_no
-                WHERE pt.bfm_equipment_no = %s AND pt.template_name = %s AND pt.pm_type = %s
+                WHERE pt.bfm_equipment_no = ? AND pt.template_name = ? AND pt.pm_type = ?
             ''', (bfm_no, template_name, pm_type))
 
             template_data = cursor.fetchone()
@@ -6547,7 +6547,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT checklist_items, special_instructions, safety_notes, estimated_hours
                 FROM pm_templates 
-                WHERE bfm_equipment_no = %s AND pm_type = %s
+                WHERE bfm_equipment_no = ? AND pm_type = ?
                 ORDER BY updated_date DESC LIMIT 1
             ''', (bfm_no, pm_type))
         
@@ -6589,7 +6589,7 @@ class AITCMMSSystem:
                     cursor.execute('''
                         SELECT pm_type, scheduled_date, assigned_technician
                         FROM weekly_pm_schedules
-                        WHERE bfm_equipment_no = %s AND status = 'Scheduled'
+                        WHERE bfm_equipment_no = ? AND status = 'Scheduled'
                         ORDER BY week_start_date DESC, scheduled_date DESC
                         LIMIT 1
                     ''', (bfm_no,))
@@ -6620,7 +6620,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT scheduled_date, week_start_date
                     FROM weekly_pm_schedules
-                    WHERE bfm_equipment_no = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND pm_type = ?
                     ORDER BY week_start_date DESC
                     LIMIT 1
                 ''', (bfm_no, pm_type))
@@ -6691,7 +6691,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT sap_material_no, description, location, status
                 FROM equipment 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
         
             equipment_data = cursor.fetchone()
@@ -6715,7 +6715,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT template_name, pm_type, checklist_items, estimated_hours, updated_date
                 FROM pm_templates 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
                 ORDER BY pm_type, template_name
             ''', (bfm_no,))
         
@@ -6784,8 +6784,8 @@ class AITCMMSSystem:
                     # Update the record
                     cursor.execute('''
                         UPDATE pm_completions 
-                        SET next_annual_pm_date = %s
-                        WHERE id = %s
+                        SET next_annual_pm_date = ?
+                        WHERE id = ?
                     ''', (new_date, record_id))
                 
                     updated_count += 1
@@ -6817,8 +6817,8 @@ class AITCMMSSystem:
                 
                     cursor.execute('''
                         UPDATE equipment 
-                        SET next_annual_pm = %s 
-                        WHERE bfm_equipment_no = %s
+                        SET next_annual_pm = ? 
+                        WHERE bfm_equipment_no = ?
                     ''', (new_date, bfm_no))
                 
                     updated_count += 1
@@ -6935,15 +6935,8 @@ class AITCMMSSystem:
     
     def __init__(self, root):
         self.root = root
-        # === NEON CLOUD DATABASE CONFIGURATION ===
-        self.DB_CONFIG = {
-            'host': 'ep-tiny-paper-ad8glt26-pooler.c-2.us-east-1.aws.neon.tech',
-            'port': 5432,
-            'database': 'neondb',
-            'user': 'neondb_owner',
-            'password': 'npg_2Nm6hyPVWiIH',  # Click "Show password" and copy it
-            'sslmode': 'require'
-        }
+        # === SQLite DATABASE CONFIGURATION ===
+        self.DB_CONFIG = {}  # SQLite - no server config needed; database file is local
         self.conn = None
         self.session_start_time = datetime.now()
         self.session_id = None  # Track user session for multi-user support
@@ -7006,6 +6999,7 @@ class AITCMMSSystem:
             # Pool will grow as needed, but starts faster with fewer connections
             db_pool.initialize(self.DB_CONFIG, min_conn=1, max_conn=10)
             print("Database connection pool initialized successfully")
+            initialise_database()  # Create SQLite tables if they don't exist
         except Exception as e:
             messagebox.showerror("Database Error",
                 f"Failed to initialize database connection:\n{str(e)}\n\nPlease check your internet connection and try again.")
@@ -7169,7 +7163,7 @@ class AITCMMSSystem:
             SELECT cm_number, bfm_equipment_no, description, assigned_technician, 
                 status, labor_hours, notes, root_cause, corrective_action
             FROM corrective_maintenance 
-            WHERE cm_number = %s
+            WHERE cm_number = ?
         ''', (cm_number,))
     
         cm_data = cursor.fetchone()
@@ -7341,12 +7335,12 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE corrective_maintenance
                     SET status = 'Closed',
-                        completion_date = %s,
-                        labor_hours = %s,
-                        root_cause = %s,
-                        corrective_action = %s,
-                        notes = %s
-                    WHERE cm_number = %s
+                        completion_date = ?,
+                        labor_hours = ?,
+                        root_cause = ?,
+                        corrective_action = ?,
+                        notes = ?
+                    WHERE cm_number = ?
                 ''', (
                     form_values['completion_date'],
                     form_values['labor_hours'],
@@ -7478,12 +7472,12 @@ class AITCMMSSystem:
                     cursor.execute('''
                         UPDATE corrective_maintenance
                         SET status = 'Closed',
-                            completion_date = %s,
-                            labor_hours = %s,
-                            root_cause = %s,
-                            corrective_action = %s,
-                            notes = %s
-                        WHERE cm_number = %s
+                            completion_date = ?,
+                            labor_hours = ?,
+                            root_cause = ?,
+                            corrective_action = ?,
+                            notes = ?
+                        WHERE cm_number = ?
                     ''', (completion_date, labor_hours, root_cause, 
                         corrective_action, all_notes, cm_number))
                 
@@ -7619,7 +7613,7 @@ class AITCMMSSystem:
                             if user:
                                 # Update last login time
                                 cursor.execute(
-                                    "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s",
+                                    "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
                                     (user['id'],)
                                 )
 
@@ -7683,7 +7677,7 @@ class AITCMMSSystem:
                 cursor.execute("""
                     SELECT full_name
                     FROM users
-                    WHERE is_active = TRUE AND role = 'Technician'
+                    WHERE is_active = 1 AND role = 'Technician'
                     ORDER BY full_name
                 """)
 
@@ -7724,11 +7718,7 @@ class AITCMMSSystem:
 
         # PERFORMANCE FIX: Check if PM templates tables already exist
         cursor.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables
-                WHERE table_schema = 'public'
-                AND table_name = 'pm_templates'
-            )
+            SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pm_templates'
         """)
         if cursor.fetchone()[0]:
             # Tables already exist, skip initialization
@@ -7737,7 +7727,7 @@ class AITCMMSSystem:
         # PM Templates table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pm_templates (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 bfm_equipment_no TEXT,
                 template_name TEXT,
                 pm_type TEXT,
@@ -7754,11 +7744,11 @@ class AITCMMSSystem:
         # Default checklist items for fallback
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS default_pm_checklist (
-                id SERIAL PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 pm_type TEXT,
                 step_number INTEGER,
                 description TEXT,
-                is_active BOOLEAN DEFAULT TRUE
+                is_active INTEGER DEFAULT 1
             )
         ''')
 
@@ -7788,7 +7778,7 @@ class AITCMMSSystem:
             for step_num, description in default_items:
                 cursor.execute('''
                     INSERT INTO default_pm_checklist (pm_type, step_number, description)
-                    VALUES ('All', %s, %s)
+                    VALUES ('All', ?, ?)
                 ''', (step_num, description))
 
         self.conn.commit()
@@ -8123,7 +8113,7 @@ class AITCMMSSystem:
                 cursor = self.conn.cursor()
 
                 # Validate BFM number exists in equipment table
-                cursor.execute('SELECT bfm_equipment_no, sap_material_no FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute('SELECT bfm_equipment_no, sap_material_no FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
                 equipment_result = cursor.fetchone()
 
                 if not equipment_result:
@@ -8157,7 +8147,7 @@ class AITCMMSSystem:
                 # Check if a template already exists for this equipment + PM type combination
                 cursor.execute('''
                     SELECT id, template_name FROM pm_templates
-                    WHERE bfm_equipment_no = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND pm_type = ?
                     ORDER BY updated_date DESC LIMIT 1
                 ''', (bfm_no, pm_type_var.get()))
 
@@ -8179,13 +8169,13 @@ class AITCMMSSystem:
                     # UPDATE existing template
                     cursor.execute('''
                         UPDATE pm_templates
-                        SET template_name = %s,
-                            checklist_items = %s,
-                            special_instructions = %s,
-                            safety_notes = %s,
-                            estimated_hours = %s,
+                        SET template_name = ?,
+                            checklist_items = ?,
+                            special_instructions = ?,
+                            safety_notes = ?,
+                            estimated_hours = ?,
                             updated_date = CURRENT_TIMESTAMP
-                        WHERE id = %s
+                        WHERE id = ?
                     ''', (
                         template_name_var.get().strip(),
                         json.dumps(checklist_items),
@@ -8210,7 +8200,7 @@ class AITCMMSSystem:
                         INSERT INTO pm_templates
                         (bfm_equipment_no, template_name, pm_type, checklist_items,
                         special_instructions, safety_notes, estimated_hours)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         bfm_no,
                         template_name_var.get().strip(),
@@ -8235,7 +8225,7 @@ class AITCMMSSystem:
                 try:
                     if hasattr(self, 'conn') and self.conn and not self.conn.closed:
                         self.conn.rollback()
-                except (psycopg2.InterfaceError, psycopg2.OperationalError):
+                except (Exception):
                     pass  # Connection already closed, nothing to rollback
                 messagebox.showerror("Error", f"Failed to save template: {str(e)}")
 
@@ -8498,8 +8488,8 @@ class AITCMMSSystem:
                     SELECT pt.bfm_equipment_no, pt.template_name, pt.pm_type, 
                         pt.checklist_items, pt.estimated_hours, pt.updated_date
                     FROM pm_templates pt
-                    WHERE LOWER(pt.bfm_equipment_no) LIKE %s 
-                    OR LOWER(pt.template_name) LIKE %s
+                    WHERE LOWER(pt.bfm_equipment_no) LIKE ? 
+                    OR LOWER(pt.template_name) LIKE ?
                     ORDER BY pt.bfm_equipment_no, pt.template_name
                 ''', (f'%{search_term}%', f'%{search_term}%'))
             else:
@@ -8567,9 +8557,9 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT bfm_equipment_no, sap_material_no, description, location
                     FROM equipment
-                    WHERE LOWER(bfm_equipment_no) LIKE %s
-                    OR LOWER(sap_material_no) LIKE %s
-                    OR LOWER(description) LIKE %s
+                    WHERE LOWER(bfm_equipment_no) LIKE ?
+                    OR LOWER(sap_material_no) LIKE ?
+                    OR LOWER(description) LIKE ?
                     ORDER BY bfm_equipment_no
                 ''', (f'%{search_term}%', f'%{search_term}%', f'%{search_term}%'))
             else:
@@ -8615,7 +8605,7 @@ class AITCMMSSystem:
                 SELECT pt.bfm_equipment_no, pt.template_name, pt.pm_type,
                     pt.checklist_items, pt.estimated_hours, pt.updated_date
                 FROM pm_templates pt
-                WHERE pt.bfm_equipment_no = %s
+                WHERE pt.bfm_equipment_no = ?
                 ORDER BY pt.template_name
             ''', (bfm_no,))
 
@@ -8631,7 +8621,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT weekly_pm, monthly_pm, six_month_pm, annual_pm
                     FROM equipment
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (bfm_no,))
                 pm_flags = cursor.fetchone()
 
@@ -8650,7 +8640,7 @@ class AITCMMSSystem:
 
                     if enabled_pm_types:
                         # Get default checklist count
-                        cursor.execute('SELECT COUNT(*) FROM default_pm_checklist WHERE is_active = TRUE')
+                        cursor.execute('SELECT COUNT(*) FROM default_pm_checklist WHERE is_active = 1')
                         default_count = cursor.fetchone()[0]
 
                         if default_count > 0:
@@ -8729,7 +8719,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT description, sap_material_no, location
                 FROM equipment
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
             equipment_data = cursor.fetchone()
 
@@ -8741,7 +8731,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT description
                 FROM default_pm_checklist
-                WHERE is_active = TRUE
+                WHERE is_active = 1
                 ORDER BY step_number
             ''')
             checklist_rows = cursor.fetchall()
@@ -8757,7 +8747,7 @@ class AITCMMSSystem:
                 SELECT pt.*, e.description, e.sap_material_no, e.location
                 FROM pm_templates pt
                 LEFT JOIN equipment e ON pt.bfm_equipment_no = e.bfm_equipment_no
-                WHERE pt.bfm_equipment_no = %s AND pt.template_name = %s AND pt.pm_type = %s
+                WHERE pt.bfm_equipment_no = ? AND pt.template_name = ? AND pt.pm_type = ?
             ''', (bfm_no, template_name, pm_type))
 
             template_data = cursor.fetchone()
@@ -8848,7 +8838,7 @@ class AITCMMSSystem:
 
         # Get equipment info
         cursor = self.conn.cursor()
-        cursor.execute('SELECT description FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+        cursor.execute('SELECT description FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
         equipment_info = cursor.fetchone()
         equipment_desc = equipment_info[0] if equipment_info else "Unknown"
 
@@ -9002,7 +8992,7 @@ class AITCMMSSystem:
                 # Check if template already exists - MUST filter by pm_type
                 cursor.execute('''
                     SELECT id FROM pm_templates
-                    WHERE bfm_equipment_no = %s AND template_name = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND template_name = ? AND pm_type = ?
                 ''', (bfm_no, template_name, pm_type))
 
                 if cursor.fetchone():
@@ -9013,10 +9003,10 @@ class AITCMMSSystem:
                     # Update existing - MUST filter by pm_type to update correct template
                     cursor.execute('''
                         UPDATE pm_templates
-                        SET checklist_items = %s,
-                            special_instructions = %s, safety_notes = %s,
-                            estimated_hours = %s, updated_date = CURRENT_TIMESTAMP
-                        WHERE bfm_equipment_no = %s AND template_name = %s AND pm_type = %s
+                        SET checklist_items = ?,
+                            special_instructions = ?, safety_notes = ?,
+                            estimated_hours = ?, updated_date = CURRENT_TIMESTAMP
+                        WHERE bfm_equipment_no = ? AND template_name = ? AND pm_type = ?
                     ''', (
                         json.dumps(checklist_items),
                         special_instructions_text.get('1.0', 'end-1c'),
@@ -9032,7 +9022,7 @@ class AITCMMSSystem:
                         INSERT INTO pm_templates
                         (bfm_equipment_no, template_name, pm_type, checklist_items,
                         special_instructions, safety_notes, estimated_hours)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         bfm_no,
                         template_name,
@@ -9085,7 +9075,7 @@ class AITCMMSSystem:
                 # MUST filter by pm_type to delete correct template
                 cursor.execute('''
                     DELETE FROM pm_templates
-                    WHERE bfm_equipment_no = %s AND template_name = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND template_name = ? AND pm_type = ?
                 ''', (bfm_no, template_name, pm_type))
             
                 self.conn.commit()
@@ -9117,7 +9107,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT sap_material_no, description, tool_id_drawing_no, location
                 FROM equipment
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
             equipment_data = cursor.fetchone()
 
@@ -9129,7 +9119,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT description
                 FROM default_pm_checklist
-                WHERE is_active = TRUE
+                WHERE is_active = 1
                 ORDER BY step_number
             ''')
             checklist_rows = cursor.fetchall()
@@ -9158,7 +9148,7 @@ class AITCMMSSystem:
                 SELECT pt.*, e.sap_material_no, e.description, e.tool_id_drawing_no, e.location
                 FROM pm_templates pt
                 LEFT JOIN equipment e ON pt.bfm_equipment_no = e.bfm_equipment_no
-                WHERE pt.bfm_equipment_no = %s AND pt.template_name = %s AND pt.pm_type = %s
+                WHERE pt.bfm_equipment_no = ? AND pt.template_name = ? AND pt.pm_type = ?
             ''', (bfm_no, template_name, pm_type))
 
             template_data = cursor.fetchone()
@@ -9419,7 +9409,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT checklist_items, special_instructions, safety_notes, estimated_hours
                 FROM pm_templates 
-                WHERE bfm_equipment_no = %s AND pm_type = %s
+                WHERE bfm_equipment_no = ? AND pm_type = ?
                 ORDER BY updated_date DESC LIMIT 1
             ''', (bfm_no, pm_type))
         
@@ -9461,7 +9451,7 @@ class AITCMMSSystem:
                     cursor.execute('''
                         SELECT pm_type, scheduled_date, assigned_technician
                         FROM weekly_pm_schedules
-                        WHERE bfm_equipment_no = %s AND status = 'Scheduled'
+                        WHERE bfm_equipment_no = ? AND status = 'Scheduled'
                         ORDER BY week_start_date DESC, scheduled_date DESC
                         LIMIT 1
                     ''', (bfm_no,))
@@ -9492,7 +9482,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT scheduled_date, week_start_date
                     FROM weekly_pm_schedules
-                    WHERE bfm_equipment_no = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND pm_type = ?
                     ORDER BY week_start_date DESC
                     LIMIT 1
                 ''', (bfm_no, pm_type))
@@ -9563,7 +9553,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT sap_material_no, description, location, status
                 FROM equipment 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
         
             equipment_data = cursor.fetchone()
@@ -9587,7 +9577,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT template_name, pm_type, checklist_items, estimated_hours, updated_date
                 FROM pm_templates 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
                 ORDER BY pm_type, template_name
             ''', (bfm_no,))
         
@@ -9637,7 +9627,7 @@ class AITCMMSSystem:
                 cursor.close()
                 self.conn.commit()
                 return  # Connection is good
-        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+        except Exception as e:
             print(f"Connection validation failed: {e}. Refreshing connection...")
         except Exception as e:
             print(f"Unexpected error validating connection: {e}")
@@ -9667,11 +9657,7 @@ class AITCMMSSystem:
 
             # PERFORMANCE FIX: Check if users table already exists with correct schema
             cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                    AND table_name = 'users'
-                )
+                SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'
             """)
             users_table_exists = cursor.fetchone()[0]
 
@@ -9686,13 +9672,13 @@ class AITCMMSSystem:
             # Create users table if it doesn't exist
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     full_name TEXT NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('Manager', 'Technician', 'Parts Coordinator')),
                     email TEXT,
-                    is_active BOOLEAN DEFAULT TRUE,
+                    is_active INTEGER DEFAULT 1,
                     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_login TIMESTAMP,
@@ -9734,7 +9720,7 @@ class AITCMMSSystem:
         """Create the default parts coordinator user if it doesn't exist"""
         try:
             # Check if apenson user already exists
-            cursor.execute("SELECT id FROM users WHERE username = %s", ('apenson',))
+            cursor.execute("SELECT id FROM users WHERE username = ?", ('apenson',))
             existing_user = cursor.fetchone()
 
             if not existing_user:
@@ -9742,7 +9728,7 @@ class AITCMMSSystem:
                 password_hash = UserManager.hash_password('apenson')
                 cursor.execute('''
                     INSERT INTO users (username, password_hash, full_name, role, email, is_active, created_by, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     'apenson',
                     password_hash,
@@ -9835,10 +9821,7 @@ class AITCMMSSystem:
 
             # Check if completion_date column exists before creating index
             cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='corrective_maintenance'
-                AND column_name='completion_date'
+                SELECT name FROM pragma_table_info('corrective_maintenance') WHERE name='completion_date'
             """)
             if cursor.fetchone():
                 cursor.execute('''
@@ -9911,22 +9894,14 @@ class AITCMMSSystem:
             # PERFORMANCE FIX: Check if database is already initialized
             # This significantly speeds up startup by skipping table creation if already done
             cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                    AND table_name = 'equipment'
-                )
+                SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='equipment'
             """)
             equipment_table_exists = cursor.fetchone()[0]
 
             if equipment_table_exists:
                 # Verify the table has key columns we expect (weekly_pm column indicates latest schema)
                 cursor.execute("""
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                    AND table_name = 'equipment'
-                    AND column_name = 'weekly_pm'
+                    SELECT name FROM pragma_table_info('equipment') WHERE name='weekly_pm'
                 """)
                 has_weekly_pm = cursor.fetchone() is not None
 
@@ -9944,16 +9919,16 @@ class AITCMMSSystem:
             # Equipment/Assets table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS equipment (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sap_material_no TEXT,
                     bfm_equipment_no TEXT UNIQUE,
                     description TEXT,
                     tool_id_drawing_no TEXT,
                     location TEXT,
                     master_lin TEXT,
-                    monthly_pm BOOLEAN DEFAULT FALSE,
-                    six_month_pm BOOLEAN DEFAULT FALSE,
-                    annual_pm BOOLEAN DEFAULT FALSE,
+                    monthly_pm INTEGER DEFAULT 0,
+                    six_month_pm INTEGER DEFAULT 0,
+                    annual_pm INTEGER DEFAULT 0,
                     last_monthly_pm TEXT,
                     last_six_month_pm TEXT,
                     last_annual_pm TEXT,
@@ -9969,7 +9944,7 @@ class AITCMMSSystem:
             # PM Completions table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS pm_completions (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bfm_equipment_no TEXT,
                     pm_type TEXT,
                     technician_name TEXT,
@@ -9991,7 +9966,7 @@ class AITCMMSSystem:
             # Weekly PM Schedules
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS weekly_pm_schedules (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bfm_equipment_no TEXT,
                     pm_type TEXT,
                     assigned_technician TEXT,
@@ -10033,11 +10008,11 @@ class AITCMMSSystem:
             try:
                 cursor.execute('''
                     ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS picture_1_data BYTEA
+                    ADD COLUMN IF NOT EXISTS picture_1_data BLOB
                 ''')
                 cursor.execute('''
                     ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS picture_2_data BYTEA
+                    ADD COLUMN IF NOT EXISTS picture_2_data BLOB
                 ''')
                 print("INFO: Equipment photo columns added successfully")
             except Exception as e:
@@ -10047,7 +10022,7 @@ class AITCMMSSystem:
             try:
                 cursor.execute('''
                     ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS weekly_pm BOOLEAN DEFAULT FALSE
+                    ADD COLUMN IF NOT EXISTS weekly_pm INTEGER DEFAULT 0
                 ''')
                 cursor.execute('''
                     ALTER TABLE equipment
@@ -10064,7 +10039,7 @@ class AITCMMSSystem:
             # Corrective Maintenance table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS corrective_maintenance (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     cm_number TEXT UNIQUE,
                     bfm_equipment_no TEXT,
                     description TEXT,
@@ -10087,7 +10062,7 @@ class AITCMMSSystem:
             # CM Parts Requests table (for requesting parts during CM creation)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cm_parts_requests (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     cm_number TEXT NOT NULL,
                     bfm_equipment_no TEXT,
                     part_number TEXT NOT NULL,
@@ -10096,7 +10071,7 @@ class AITCMMSSystem:
                     requested_by TEXT,
                     requested_date TEXT,
                     notes TEXT,
-                    email_sent BOOLEAN DEFAULT FALSE,
+                    email_sent INTEGER DEFAULT 0,
                     email_sent_at TIMESTAMP,
                     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (cm_number) REFERENCES corrective_maintenance (cm_number)
@@ -10106,7 +10081,7 @@ class AITCMMSSystem:
             # Equipment Missing Parts table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS equipment_missing_parts (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     emp_number TEXT UNIQUE,
                     bfm_equipment_no TEXT,
                     description TEXT,
@@ -10168,7 +10143,7 @@ class AITCMMSSystem:
             # Work Orders table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS work_orders (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     wo_number TEXT UNIQUE,
                     bfm_equipment_no TEXT,
                     wo_type TEXT,
@@ -10191,7 +10166,7 @@ class AITCMMSSystem:
             # Parts/Inventory table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS parts_inventory (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     part_number TEXT UNIQUE,
                     description TEXT,
                     quantity INTEGER DEFAULT 0,
@@ -10209,7 +10184,7 @@ class AITCMMSSystem:
             # MRO Stock table (if you use it)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS mro_stock (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     part_number TEXT UNIQUE,
                     description TEXT,
                     quantity INTEGER DEFAULT 0,
@@ -10224,7 +10199,7 @@ class AITCMMSSystem:
             # Cannot Find Assets table - COMPLETE VERSION
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cannot_find_assets (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bfm_equipment_no TEXT UNIQUE,
                     description TEXT,
                     location TEXT,
@@ -10248,7 +10223,7 @@ class AITCMMSSystem:
             # Run to Failure Assets table - COMPLETE WITH LABOR TRACKING
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS run_to_failure_assets (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bfm_equipment_no TEXT UNIQUE,
                     description TEXT,
                     location TEXT,
@@ -10280,7 +10255,7 @@ class AITCMMSSystem:
             # Deactivated Assets table - For tracking deactivated equipment
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS deactivated_assets (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bfm_equipment_no TEXT UNIQUE,
                     description TEXT,
                     location TEXT,
@@ -10300,13 +10275,13 @@ class AITCMMSSystem:
             # Users table for authentication
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
                     password_hash TEXT NOT NULL,
                     full_name TEXT NOT NULL,
                     role TEXT NOT NULL CHECK (role IN ('Manager', 'Technician', 'Parts Coordinator')),
                     email TEXT,
-                    is_active BOOLEAN DEFAULT TRUE,
+                    is_active INTEGER DEFAULT 1,
                     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_login TIMESTAMP,
@@ -10334,13 +10309,13 @@ class AITCMMSSystem:
             # User sessions table for tracking active sessions
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_sessions (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     username TEXT NOT NULL,
                     login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     logout_time TIMESTAMP,
                     last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active BOOLEAN DEFAULT TRUE,
+                    is_active INTEGER DEFAULT 1,
                     session_data TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
@@ -10349,7 +10324,7 @@ class AITCMMSSystem:
             # Audit log table for tracking all changes
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS audit_log (
-                    id SERIAL PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_name TEXT NOT NULL,
                     action TEXT NOT NULL,
                     table_name TEXT NOT NULL,
@@ -10732,7 +10707,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT cm_number, bfm_equipment_no, description, priority, status, created_date
                 FROM corrective_maintenance 
-                WHERE assigned_technician = %s
+                WHERE assigned_technician = ?
                 ORDER BY created_date DESC
             ''', (self.user_name,))
         
@@ -10810,7 +10785,7 @@ class AITCMMSSystem:
                 cursor.execute(
                     """
                     SELECT username FROM users
-                    WHERE id = %s
+                    WHERE id = ?
                     """,
                     (self.user_id,)
                 )
@@ -11207,25 +11182,25 @@ class AITCMMSSystem:
                     COUNT(DISTINCT CASE WHEN c.bfm_equipment_no IS NOT NULL THEN e.bfm_equipment_no END) as cannot_find_count,
                     COUNT(DISTINCT CASE WHEN d.bfm_equipment_no IS NOT NULL THEN e.bfm_equipment_no END) as deactivated_count,
                     COUNT(DISTINCT CASE
-                        WHEN e.monthly_pm = TRUE
+                        WHEN e.monthly_pm = 1
                         AND c.bfm_equipment_no IS NULL
                         AND d.bfm_equipment_no IS NULL
                         THEN e.bfm_equipment_no
                     END) as monthly_equipment_count,
                     COUNT(DISTINCT CASE
-                        WHEN e.six_month_pm = TRUE
+                        WHEN e.six_month_pm = 1
                         AND c.bfm_equipment_no IS NULL
                         AND d.bfm_equipment_no IS NULL
                         THEN e.bfm_equipment_no
                     END) as six_month_equipment_count,
                     COUNT(DISTINCT CASE
-                        WHEN e.annual_pm = TRUE
+                        WHEN e.annual_pm = 1
                         AND c.bfm_equipment_no IS NULL
                         AND d.bfm_equipment_no IS NULL
                         THEN e.bfm_equipment_no
                     END) as annual_equipment_count,
                     COUNT(DISTINCT CASE
-                        WHEN e.weekly_pm = TRUE
+                        WHEN e.weekly_pm = 1
                         AND c.bfm_equipment_no IS NULL
                         AND d.bfm_equipment_no IS NULL
                         THEN e.bfm_equipment_no
@@ -11573,7 +11548,7 @@ class AITCMMSSystem:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                     SELECT bfm_equipment_no FROM equipment 
-                    WHERE LOWER(bfm_equipment_no) LIKE LOWER(%s)
+                    WHERE LOWER(bfm_equipment_no) LIKE LOWER(?)
                     ORDER BY bfm_equipment_no LIMIT 10
                 ''', (f'%{search_term}%',))
             
@@ -11611,7 +11586,7 @@ class AITCMMSSystem:
                     next_monthly_pm, next_six_month_pm, next_annual_pm,
                     updated_date
                 FROM equipment 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
         
             equipment_data = cursor.fetchone()
@@ -11745,7 +11720,7 @@ class AITCMMSSystem:
                     (labor_hours + labor_minutes/60.0) as total_hours,
                     SUBSTR(notes, 1, 50) as notes_preview
                 FROM pm_completions 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
                 ORDER BY completion_date DESC LIMIT 10
             ''', (bfm_no,))
         
@@ -11788,7 +11763,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT pm_type, assigned_technician, scheduled_date, week_start_date, status
                 FROM weekly_pm_schedules
-                WHERE bfm_equipment_no = %s AND scheduled_date::date >= CURRENT_DATE
+                WHERE bfm_equipment_no = ? AND scheduled_date >= CURRENT_DATE
                 ORDER BY scheduled_date ASC LIMIT 5
             ''', (bfm_no,))
         
@@ -11918,7 +11893,7 @@ class AITCMMSSystem:
                         pc.next_annual_pm_date
                     FROM pm_completions pc
                     LEFT JOIN equipment e ON pc.bfm_equipment_no = e.bfm_equipment_no
-                    WHERE pc.completion_date BETWEEN %s AND %s
+                    WHERE pc.completion_date BETWEEN ? AND ?
                     UNION ALL
                     SELECT 
                         cf.reported_date,
@@ -11936,7 +11911,7 @@ class AITCMMSSystem:
                         '' as pm_due_date,
                         '' as next_annual_pm_date
                     FROM cannot_find_assets cf
-                    WHERE cf.reported_date BETWEEN %s AND %s
+                    WHERE cf.reported_date BETWEEN ? AND ?
                     ORDER BY completion_date DESC
                 ''', (start_date, end_date, start_date, end_date))
             
@@ -12030,8 +12005,8 @@ class AITCMMSSystem:
                 SELECT pc.*, e.sap_material_no, e.description, e.location
                 FROM pm_completions pc
                 LEFT JOIN equipment e ON pc.bfm_equipment_no = e.bfm_equipment_no
-                WHERE pc.completion_date = %s AND pc.bfm_equipment_no = %s
-                AND pc.pm_type = %s AND pc.technician_name = %s
+                WHERE pc.completion_date = ? AND pc.bfm_equipment_no = ?
+                AND pc.pm_type = ? AND pc.technician_name = ?
             ''', (str(completion_date), str(bfm_no), str(pm_type), str(technician)))
 
             completion_data = cursor.fetchone()
@@ -12163,17 +12138,17 @@ class AITCMMSSystem:
                     update_cursor = self.conn.cursor()
                     update_cursor.execute('''
                         UPDATE pm_completions
-                        SET pm_type = %s,
-                            technician_name = %s,
-                            completion_date = %s,
-                            labor_hours = %s,
-                            labor_minutes = %s,
-                            pm_due_date = %s,
-                            special_equipment = %s,
-                            notes = %s,
-                            next_annual_pm_date = %s,
+                        SET pm_type = ?,
+                            technician_name = ?,
+                            completion_date = ?,
+                            labor_hours = ?,
+                            labor_minutes = ?,
+                            pm_due_date = ?,
+                            special_equipment = ?,
+                            notes = ?,
+                            next_annual_pm_date = ?,
                             updated_date = CURRENT_TIMESTAMP
-                        WHERE id = %s
+                        WHERE id = ?
                     ''', (new_pm_type, new_technician, new_completion_date,
                          new_labor_hours, new_labor_minutes, new_pm_due_date,
                          new_special_equipment, new_notes, new_next_annual_pm,
@@ -12220,8 +12195,8 @@ class AITCMMSSystem:
                 SELECT pc.*, e.sap_material_no, e.description, e.location
                 FROM pm_completions pc
                 LEFT JOIN equipment e ON pc.bfm_equipment_no = e.bfm_equipment_no
-                WHERE pc.completion_date = %s AND pc.bfm_equipment_no = %s
-                AND pc.pm_type = %s AND pc.technician_name = %s
+                WHERE pc.completion_date = ? AND pc.bfm_equipment_no = ?
+                AND pc.pm_type = ? AND pc.technician_name = ?
             ''', (completion_date_str, bfm_no_str, pm_type_str, technician_str))
         
             completion_data = cursor.fetchone()
@@ -12478,7 +12453,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT bfm_equipment_no, description, location, technician_name, reported_date, notes
                     FROM cannot_find_assets
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (bfm_number,))
 
                 asset_info = cursor.fetchone()
@@ -12493,7 +12468,7 @@ class AITCMMSSystem:
                     cf_notes = ''
 
                 # Delete from cannot_find_assets table
-                cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = %s', (bfm_number,))
+                cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = ?', (bfm_number,))
 
                 # Get current date
                 from datetime import datetime
@@ -12503,7 +12478,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     INSERT INTO deactivated_assets
                     (bfm_equipment_no, description, location, deactivated_by, deactivated_date, reason, status, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'Deactivated', %s)
+                    VALUES (?, ?, ?, ?, ?, ?, 'Deactivated', ?)
                     ON CONFLICT (bfm_equipment_no)
                     DO UPDATE SET
                         description = EXCLUDED.description,
@@ -12527,7 +12502,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE equipment
                     SET status = 'Deactivated'
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (bfm_number,))
 
                 # Commit the changes
@@ -12557,7 +12532,7 @@ class AITCMMSSystem:
         # Example using SQLite
         try:
             cursor = self.connection.cursor()
-            cursor.execute("DELETE FROM cannot_find_assets WHERE bfm_number = %s", (bfm_number,))
+            cursor.execute("DELETE FROM cannot_find_assets WHERE bfm_number = ?", (bfm_number,))
             self.connection.commit()
         except Exception as e:
             raise Exception(f"Database error: {str(e)}")
@@ -12713,9 +12688,9 @@ class AITCMMSSystem:
             cursor = self.conn.cursor()
             cursor.execute("""
                 UPDATE cannot_find_assets
-                SET description = %s, location = %s, technician_name = %s,
-                    reported_date = %s, status = %s, updated_date = CURRENT_TIMESTAMP
-                WHERE bfm_equipment_no = %s
+                SET description = ?, location = ?, technician_name = ?,
+                    reported_date = ?, status = ?, updated_date = CURRENT_TIMESTAMP
+                WHERE bfm_equipment_no = ?
             """, (asset_data[1], asset_data[2], asset_data[3],
                 asset_data[4], asset_data[5], asset_data[0]))
             self.conn.commit()
@@ -13029,10 +13004,7 @@ class AITCMMSSystem:
 
             # Check if completion_date column exists
             cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='corrective_maintenance'
-                AND column_name='completion_date'
+                SELECT name FROM pragma_table_info('corrective_maintenance') WHERE name='completion_date'
             """)
             has_completion_date = cursor.fetchone() is not None
 
@@ -13051,7 +13023,7 @@ class AITCMMSSystem:
                     # Include both 'Closed' and 'Completed'
                     query += " AND status IN ('Closed', 'Completed')"
                 else:
-                    query += " AND status = %s"
+                    query += " AND status = ?"
                     params.append(selected_status)
 
             # Month name to number mapping
@@ -13074,10 +13046,10 @@ class AITCMMSSystem:
                     if selected_month != "All":
                         month_num = month_names.get(selected_month)
                         if month_num:
-                            month_year_checks.append(f"(EXTRACT(MONTH FROM COALESCE(completion_date, closed_date)::timestamp) = {month_num})")
+                            month_year_checks.append(f"(CAST(strftime('%m', COALESCE(completion_date, closed_date)) AS INTEGER) = {month_num})")
 
                     if selected_year != "All":
-                        month_year_checks.append(f"(EXTRACT(YEAR FROM COALESCE(completion_date, closed_date)::timestamp) = {int(selected_year)})")
+                        month_year_checks.append(f"(CAST(strftime('%Y', COALESCE(completion_date, closed_date)) AS INTEGER) = {int(selected_year)})")
 
                     if month_year_checks:
                         closed_condition += " AND ".join(month_year_checks) + "))"
@@ -13090,10 +13062,10 @@ class AITCMMSSystem:
                     if selected_month != "All":
                         month_num = month_names.get(selected_month)
                         if month_num:
-                            month_year_checks.append(f"(EXTRACT(MONTH FROM closed_date::timestamp) = {month_num})")
+                            month_year_checks.append(f"(CAST(strftime('%m', closed_date) AS INTEGER) = {month_num})")
 
                     if selected_year != "All":
-                        month_year_checks.append(f"(EXTRACT(YEAR FROM closed_date::timestamp) = {int(selected_year)})")
+                        month_year_checks.append(f"(CAST(strftime('%Y', closed_date) AS INTEGER) = {int(selected_year)})")
 
                     if month_year_checks:
                         closed_condition += " AND ".join(month_year_checks) + "))"
@@ -13106,10 +13078,10 @@ class AITCMMSSystem:
                 if selected_month != "All":
                     month_num = month_names.get(selected_month)
                     if month_num:
-                        month_year_checks.append(f"(EXTRACT(MONTH FROM created_date::timestamp) = {month_num})")
+                        month_year_checks.append(f"(CAST(strftime('%m', created_date) AS INTEGER) = {month_num})")
 
                 if selected_year != "All":
-                    month_year_checks.append(f"(EXTRACT(YEAR FROM created_date::timestamp) = {int(selected_year)})")
+                    month_year_checks.append(f"(CAST(strftime('%Y', created_date) AS INTEGER) = {int(selected_year)})")
 
                 if month_year_checks:
                     open_condition += " AND ".join(month_year_checks) + "))"
@@ -13223,10 +13195,7 @@ class AITCMMSSystem:
 
             # First, check if completion_date column exists
             cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='corrective_maintenance'
-                AND column_name='completion_date'
+                SELECT name FROM pragma_table_info('corrective_maintenance') WHERE name='completion_date'
             """)
             has_completion_date = cursor.fetchone() is not None
 
@@ -13734,7 +13703,7 @@ class AITCMMSSystem:
                             INSERT OR REPLACE INTO corrective_maintenance 
                             (cm_number, bfm_equipment_no, description, priority, assigned_technician, 
                             status, created_date, notes)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             data.get('cm_number'),
                             data.get('bfm_equipment_no'),
@@ -13805,10 +13774,7 @@ class AITCMMSSystem:
 
             # Check if completion_date column exists
             cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name='corrective_maintenance'
-                AND column_name='completion_date'
+                SELECT name FROM pragma_table_info('corrective_maintenance') WHERE name='completion_date'
             """)
             has_completion_date = cursor.fetchone() is not None
 
@@ -13964,7 +13930,7 @@ class AITCMMSSystem:
             cursor = self.conn.cursor()
             cursor.execute('''
                 SELECT bfm_equipment_no FROM equipment 
-                WHERE LOWER(bfm_equipment_no) LIKE %s OR LOWER(description) LIKE %s
+                WHERE LOWER(bfm_equipment_no) LIKE ? OR LOWER(description) LIKE ?
                 ORDER BY bfm_equipment_no LIMIT 10
             ''', (f'%{search_term}%', f'%{search_term}%'))
             
@@ -14078,7 +14044,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT pm_type, assigned_technician, scheduled_date
                     FROM weekly_pm_schedules
-                    WHERE bfm_equipment_no = %s AND status = 'Scheduled'
+                    WHERE bfm_equipment_no = ? AND status = 'Scheduled'
                     ORDER BY week_start_date DESC, scheduled_date DESC
                     LIMIT 1
                 ''', (bfm_no,))
@@ -14299,7 +14265,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT completion_date, technician_name, id
                 FROM pm_completions 
-                WHERE bfm_equipment_no = %s AND pm_type = %s
+                WHERE bfm_equipment_no = ? AND pm_type = ?
                 ORDER BY completion_date DESC LIMIT 1
             ''', (bfm_no, pm_type))
         
@@ -14333,18 +14299,17 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT COUNT(*) 
                 FROM pm_completions 
-                WHERE bfm_equipment_no = %s 
-                AND technician_name = %s
-                AND pm_type = %s
-                AND completion_date::date >= %s::date - INTERVAL '7 days'
-            ''', (bfm_no, technician, pm_type, completion_date))
+                WHERE bfm_equipment_no = ? 
+                AND technician_name = ?
+                AND pm_type = ?
+                AND completion_date >= date(?, '-7 day')''', (bfm_no, technician, pm_type, completion_date))
         
             recent_count = cursor.fetchone()[0]
             if recent_count > 0:
                 issues.append(f"WARNING: Same technician ({technician}) completed {pm_type} PM on {bfm_no} within last 7 days")
 
             # Check 3: Equipment exists and is active
-            cursor.execute('SELECT status FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+            cursor.execute('SELECT status FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
             equipment_status = cursor.fetchone()
         
             if not equipment_status:
@@ -14356,8 +14321,8 @@ class AITCMMSSystem:
             #current_week_start = self.get_week_start(datetime.strptime(completion_date, '%Y-%m-%d'))
             #cursor.execute('''
             #   SELECT COUNT(*) FROM weekly_pm_schedules 
-            #   WHERE bfm_equipment_no = %s AND pm_type = %s 
-            #    AND assigned_technician = %s AND week_start_date = %s
+            #   WHERE bfm_equipment_no = ? AND pm_type = ? 
+            #    AND assigned_technician = ? AND week_start_date = ?
             #''', (bfm_no, pm_type, technician, current_week_start.strftime('%Y-%m-%d')))
             #
             #scheduled_count = cursor.fetchone()[0]
@@ -14395,8 +14360,8 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT id, completion_date, technician_name, created_date
                 FROM pm_completions 
-                WHERE bfm_equipment_no = %s AND pm_type = %s AND technician_name = %s
-                AND completion_date = %s
+                WHERE bfm_equipment_no = ? AND pm_type = ? AND technician_name = ?
+                AND completion_date = ?
                 ORDER BY created_date DESC LIMIT 1
             ''', (bfm_no, pm_type, technician, completion_date))
         
@@ -14410,7 +14375,7 @@ class AITCMMSSystem:
             # Check 2: Equipment PM dates updated (for normal PMs)
             if pm_type in ['Monthly', 'Six Month', 'Annual']:
                 date_field = f'last_{pm_type.lower().replace(" ", "_")}_pm'
-                cursor.execute(f'SELECT {date_field} FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute(f'SELECT {date_field} FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
             
                 equipment_date = cursor.fetchone()
                 if equipment_date and equipment_date[0] != completion_date:
@@ -14423,8 +14388,8 @@ class AITCMMSSystem:
             current_week_start = self.get_week_start(datetime.strptime(completion_date, '%Y-%m-%d'))
             cursor.execute('''
                 SELECT status FROM weekly_pm_schedules 
-                WHERE bfm_equipment_no = %s AND pm_type = %s
-                AND assigned_technician = %s AND week_start_date = %s
+                WHERE bfm_equipment_no = ? AND pm_type = ?
+                AND assigned_technician = ? AND week_start_date = ?
             ''', (bfm_no, pm_type, technician, current_week_start.strftime('%Y-%m-%d')))
         
             schedule_status = cursor.fetchone()
@@ -14455,8 +14420,7 @@ class AITCMMSSystem:
                 (bfm_equipment_no, pm_type, technician_name, completion_date, 
                 labor_hours, labor_minutes, pm_due_date, special_equipment, 
                 notes, next_annual_pm_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 bfm_no, pm_type, technician, completion_date,
                 labor_hours, labor_minutes, pm_due_date, special_equipment,
@@ -14464,7 +14428,7 @@ class AITCMMSSystem:
             ))
         
          
-            completion_id = cursor.fetchone()[0]
+            completion_id = cursor.lastrowid
             if not completion_id:
                 raise Exception("Failed to get completion record ID")
 
@@ -14473,37 +14437,37 @@ class AITCMMSSystem:
                 if next_annual_pm: 
                     cursor.execute('''
                         UPDATE equipment SET 
-                        last_monthly_pm = %s, 
-                        next_monthly_pm = %s::date + INTERVAL '30 days',
-                        next_annual_pm = %s,  
+                        last_monthly_pm = ?, 
+                        next_monthly_pm = date(?, '+30 day'),
+                        next_annual_pm = ?,  
                         updated_date = CURRENT_TIMESTAMP
-                        WHERE bfm_equipment_no = %s
+                        WHERE bfm_equipment_no = ?
                     ''', (completion_date, completion_date, next_annual_pm, bfm_no))
                 else:
                     cursor.execute('''
                         UPDATE equipment SET 
-                        last_monthly_pm = %s, 
-                        next_monthly_pm = %s::date + INTERVAL '30 days',
+                        last_monthly_pm = ?, 
+                        next_monthly_pm = date(?, '+30 day'),
                         updated_date = CURRENT_TIMESTAMP
-                        WHERE bfm_equipment_no = %s
+                        WHERE bfm_equipment_no = ?
                     ''', (completion_date, completion_date, bfm_no))
                     
             elif pm_type == 'Six Month':
                 cursor.execute('''
                     UPDATE equipment SET 
-                    last_six_month_pm = %s, 
-                    next_six_month_pm = %s::date + INTERVAL '180 days',
+                    last_six_month_pm = ?, 
+                    next_six_month_pm = date(?, '+180 day'),
                     updated_date = CURRENT_TIMESTAMP
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (completion_date, completion_date, bfm_no))
                 
             elif pm_type == 'Annual':
                 cursor.execute('''
                     UPDATE equipment SET 
-                    last_annual_pm = %s, 
-                    next_annual_pm = %s::date + INTERVAL '365 days',
+                    last_annual_pm = ?, 
+                    next_annual_pm = date(?, '+365 day'),
                     updated_date = CURRENT_TIMESTAMP
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (completion_date, completion_date, bfm_no))
 
             # Verify equipment update worked
@@ -14517,12 +14481,12 @@ class AITCMMSSystem:
             cursor.execute('''
                 UPDATE weekly_pm_schedules SET
                 status = 'Completed',
-                completion_date = %s,
-                labor_hours = %s,
-                notes = %s
+                completion_date = ?,
+                labor_hours = ?,
+                notes = ?
                 WHERE id = (
                     SELECT id FROM weekly_pm_schedules
-                    WHERE bfm_equipment_no = %s AND pm_type = %s AND assigned_technician = %s
+                    WHERE bfm_equipment_no = ? AND pm_type = ? AND assigned_technician = ?
                     AND status = 'Scheduled'
                     ORDER BY scheduled_date
                     LIMIT 1
@@ -14566,10 +14530,10 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE weekly_pm_schedules 
                     SET status = 'Completed',
-                        completion_date = %s,
-                        labor_hours = %s,
-                        notes = %s
-                    WHERE bfm_equipment_no = %s AND pm_type = %s AND assigned_technician = %s
+                        completion_date = ?,
+                        labor_hours = ?,
+                        notes = ?
+                    WHERE bfm_equipment_no = ? AND pm_type = ? AND assigned_technician = ?
                     AND week_start_date = '2025-08-25' AND status = 'Scheduled'
                 ''', (comp_date, hours, notes, bfm_no, pm_type, technician))
             
@@ -14580,7 +14544,7 @@ class AITCMMSSystem:
                     # First check if there's an available scheduled PM for this equipment/PM type
                     cursor.execute('''
                         SELECT id FROM weekly_pm_schedules 
-                        WHERE bfm_equipment_no = %s AND pm_type = %s
+                        WHERE bfm_equipment_no = ? AND pm_type = ?
                         AND week_start_date = '2025-08-25' AND status = 'Scheduled'
                     ''', (bfm_no, pm_type))
                 
@@ -14591,11 +14555,11 @@ class AITCMMSSystem:
                         cursor.execute('''
                             UPDATE weekly_pm_schedules 
                             SET status = 'Completed',
-                                completion_date = %s,
-                                labor_hours = %s,
-                                notes = %s,
-                                assigned_technician = %s
-                            WHERE id = %s
+                                completion_date = ?,
+                                labor_hours = ?,
+                                notes = ?,
+                                assigned_technician = ?
+                            WHERE id = ?
                         ''', (comp_date, hours, notes, technician, available[0]))
                     
                         flexible_matches = cursor.rowcount
@@ -14665,9 +14629,9 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE weekly_pm_schedules
                     SET status = 'Cannot Find',
-                        completion_date = %s,
-                        notes = COALESCE(%s, notes)
-                    WHERE bfm_equipment_no = %s
+                        completion_date = ?,
+                        notes = COALESCE(?, notes)
+                    WHERE bfm_equipment_no = ?
                       AND status = 'Scheduled'
                 ''', (reported_date, notes, bfm_no))
 
@@ -14708,7 +14672,7 @@ class AITCMMSSystem:
         """Process CANNOT FIND PM with validation"""
         try:
             # Get equipment info
-            cursor.execute('SELECT description, location FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+            cursor.execute('SELECT description, location FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
             equipment_info = cursor.fetchone()
             description = equipment_info[0] if equipment_info else ''
             location = equipment_info[1] if equipment_info else ''
@@ -14717,11 +14681,11 @@ class AITCMMSSystem:
             cursor.execute('''
                 INSERT INTO cannot_find_assets 
                 (bfm_equipment_no, description, location, technician_name, reported_date, notes)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (bfm_no, description, location, technician, completion_date, notes))
 
             # Update equipment status
-            cursor.execute('UPDATE equipment SET status = "Missing" WHERE bfm_equipment_no = %s', (bfm_no,))
+            cursor.execute('UPDATE equipment SET status = "Missing" WHERE bfm_equipment_no = ?', (bfm_no,))
 
             affected_rows = cursor.rowcount
             if affected_rows != 1:
@@ -14731,11 +14695,11 @@ class AITCMMSSystem:
             cursor.execute('''
                 UPDATE weekly_pm_schedules SET
                 status = 'Cannot Find',
-                completion_date = %s,
-                notes = %s
+                completion_date = ?,
+                notes = ?
                 WHERE id = (
                     SELECT id FROM weekly_pm_schedules
-                    WHERE bfm_equipment_no = %s AND assigned_technician = %s
+                    WHERE bfm_equipment_no = ? AND assigned_technician = ?
                     AND status = 'Scheduled'
                     ORDER BY scheduled_date
                     LIMIT 1
@@ -14753,7 +14717,7 @@ class AITCMMSSystem:
         """Process Run to Failure PM with validation"""
         try:
             # Get equipment info
-            cursor.execute('SELECT description, location FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+            cursor.execute('SELECT description, location FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
             equipment_info = cursor.fetchone()
             description = equipment_info[0] if equipment_info else ''
             location = equipment_info[1] if equipment_info else ''
@@ -14762,7 +14726,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 INSERT INTO run_to_failure_assets 
                 (bfm_equipment_no, description, location, technician_name, completion_date, labor_hours, notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (bfm_no, description, location, technician, completion_date, total_hours, notes))
 
             # Update equipment status and disable all PM types
@@ -14773,7 +14737,7 @@ class AITCMMSSystem:
                 six_month_pm = 0,
                 annual_pm = 0,
                 updated_date = CURRENT_TIMESTAMP
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
         
             affected_rows = cursor.rowcount
@@ -14784,12 +14748,12 @@ class AITCMMSSystem:
             cursor.execute('''
                 UPDATE weekly_pm_schedules SET
                 status = 'Completed',
-                completion_date = %s,
-                labor_hours = %s,
-                notes = %s
+                completion_date = ?,
+                labor_hours = ?,
+                notes = ?
                 WHERE id = (
                     SELECT id FROM weekly_pm_schedules
-                    WHERE bfm_equipment_no = %s AND assigned_technician = %s
+                    WHERE bfm_equipment_no = ? AND assigned_technician = ?
                     AND status = 'Scheduled'
                     ORDER BY scheduled_date
                     LIMIT 1
@@ -14813,7 +14777,7 @@ class AITCMMSSystem:
                     (labor_hours + labor_minutes/60.0) as total_hours,
                     notes
                 FROM pm_completions 
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
                 ORDER BY completion_date DESC LIMIT 10
             ''', (bfm_no,))
         
@@ -14943,9 +14907,9 @@ class AITCMMSSystem:
             # Add search filter if provided
             if search_term:
                 query += ''' AND (
-                    LOWER(da.bfm_equipment_no) LIKE LOWER(%s) OR
-                    LOWER(da.description) LIKE LOWER(%s) OR
-                    LOWER(e.sap_material_no) LIKE LOWER(%s)
+                    LOWER(da.bfm_equipment_no) LIKE LOWER(?) OR
+                    LOWER(da.description) LIKE LOWER(?) OR
+                    LOWER(e.sap_material_no) LIKE LOWER(?)
                 )'''
                 search_param = f'%{search_term}%'
                 params.extend([search_param] * 3)
@@ -15132,7 +15096,7 @@ class AITCMMSSystem:
 
                                 # First, check if equipment exists in equipment table, if not, create it
                                 cursor.execute('''
-                                    SELECT bfm_equipment_no FROM equipment WHERE TRIM(bfm_equipment_no) = TRIM(%s)
+                                    SELECT bfm_equipment_no FROM equipment WHERE TRIM(bfm_equipment_no) = TRIM(?)
                                 ''', (bfm_no,))
 
                                 equipment_exists = cursor.fetchone()
@@ -15142,7 +15106,7 @@ class AITCMMSSystem:
                                     cursor.execute('''
                                         INSERT INTO equipment
                                         (sap_material_no, bfm_equipment_no, description, status)
-                                        VALUES (%s, %s, %s, %s)
+                                        VALUES (?, ?, ?, ?)
                                         ON CONFLICT (bfm_equipment_no) DO NOTHING
                                     ''', (
                                         data.get('sap_material_no'),
@@ -15155,7 +15119,7 @@ class AITCMMSSystem:
                                     cursor.execute('''
                                         UPDATE equipment
                                         SET status = 'Deactivated'
-                                        WHERE TRIM(bfm_equipment_no) = TRIM(%s)
+                                        WHERE TRIM(bfm_equipment_no) = TRIM(?)
                                     ''', (bfm_no,))
 
                                 # Insert into deactivated_assets table
@@ -15163,7 +15127,7 @@ class AITCMMSSystem:
                                     INSERT INTO deactivated_assets
                                     (bfm_equipment_no, description, deactivated_by, deactivated_date,
                                      reason, status)
-                                    VALUES (%s, %s, %s, %s, %s, %s)
+                                    VALUES (?, ?, ?, ?, ?, ?)
                                     ON CONFLICT (bfm_equipment_no) DO UPDATE SET
                                         description = EXCLUDED.description,
                                         deactivated_by = EXCLUDED.deactivated_by,
@@ -15593,11 +15557,11 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE equipment SET
                     status = 'Active',
-                    monthly_pm = %s,
-                    six_month_pm = %s,
-                    annual_pm = %s,
+                    monthly_pm = ?,
+                    six_month_pm = ?,
+                    annual_pm = ?,
                     updated_date = CURRENT_TIMESTAMP
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (
                     True if monthly_var.get() else False,
                     True if six_month_var.get() else False,
@@ -15612,16 +15576,16 @@ class AITCMMSSystem:
                     UPDATE cannot_find_assets
                     SET status = 'Found',
                         found_date = CURRENT_DATE,
-                        found_by = %s,
+                        found_by = ?,
                         updated_date = CURRENT_TIMESTAMP
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (found_by, bfm_no))
 
                 # Update any "Cannot Find" PM schedules back to "Scheduled"
                 cursor.execute('''
                     UPDATE weekly_pm_schedules
                     SET status = 'Scheduled'
-                    WHERE bfm_equipment_no = %s AND status = 'Cannot Find'
+                    WHERE bfm_equipment_no = ? AND status = 'Cannot Find'
                 ''', (bfm_no,))
 
                 self.conn.commit()
@@ -15786,11 +15750,11 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE equipment SET
                     status = 'Active',
-                    monthly_pm = %s,
-                    six_month_pm = %s,
-                    annual_pm = %s,
+                    monthly_pm = ?,
+                    six_month_pm = ?,
+                    annual_pm = ?,
                     updated_date = CURRENT_TIMESTAMP
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (
                     True if monthly_var.get() else False,
                     True if six_month_var.get() else False,
@@ -15801,14 +15765,14 @@ class AITCMMSSystem:
                 # Remove from deactivated_assets table
                 cursor.execute('''
                     DELETE FROM deactivated_assets
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (bfm_no,))
 
                 # Update any "Deactivated" PM schedules back to "Scheduled"
                 cursor.execute('''
                     UPDATE weekly_pm_schedules
                     SET status = 'Scheduled'
-                    WHERE bfm_equipment_no = %s AND status = 'Deactivated'
+                    WHERE bfm_equipment_no = ? AND status = 'Deactivated'
                 ''', (bfm_no,))
 
                 self.conn.commit()
@@ -15932,7 +15896,7 @@ class AITCMMSSystem:
                     COUNT(*) as total_scheduled,
                     COUNT(CASE WHEN status = 'Completed' THEN 1 END) as total_completed
                 FROM weekly_pm_schedules 
-                WHERE week_start_date = %s
+                WHERE week_start_date = ?
             ''', (week_start.strftime('%Y-%m-%d'),))
             
             total_scheduled, total_completed = cursor.fetchone()
@@ -15946,7 +15910,7 @@ class AITCMMSSystem:
                     COUNT(CASE WHEN status = 'Completed' THEN 1 END) as completed,
                     AVG(CASE WHEN status = 'Completed' THEN labor_hours END) as avg_hours
                 FROM weekly_pm_schedules 
-                WHERE week_start_date = %s
+                WHERE week_start_date = ?
                 GROUP BY assigned_technician
                 ORDER BY assigned_technician
             ''', (week_start.strftime('%Y-%m-%d'),))
@@ -16003,7 +15967,7 @@ class AITCMMSSystem:
                        COUNT(*) as scheduled,
                        COUNT(CASE WHEN status = 'Completed' THEN 1 END) as completed
                 FROM weekly_pm_schedules 
-                WHERE week_start_date = %s
+                WHERE week_start_date = ?
                 GROUP BY pm_type
             ''', (week_start.strftime('%Y-%m-%d'),))
             
@@ -16027,7 +15991,7 @@ class AITCMMSSystem:
                 INSERT OR REPLACE INTO weekly_reports 
                 (week_start_date, total_scheduled, total_completed, completion_rate, 
                  technician_performance, report_data)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (
                 week_start.strftime('%Y-%m-%d'),
                 total_scheduled,
@@ -16058,7 +16022,7 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT week_start_date, total_scheduled, total_completed, completion_rate
                 FROM weekly_reports 
-                WHERE week_start_date >= DATE_TRUNC('month', %s::date)
+                WHERE week_start_date >= date(?, 'start of month')
                 ORDER BY week_start_date
             ''', (current_date.strftime('%Y-%m-%d'),))
             
@@ -16071,7 +16035,7 @@ class AITCMMSSystem:
                     COUNT(*) as total_completed,
                     AVG(labor_hours + labor_minutes/60.0) as avg_hours
                 FROM pm_completions 
-                WHERE completion_date >= DATE_TRUNC('month', %s::date)
+                WHERE completion_date >= date(?, 'start of month')
                 GROUP BY pm_type
             ''', (current_date.strftime('%Y-%m-%d'),))
             
@@ -16151,7 +16115,7 @@ class AITCMMSSystem:
         cursor.execute(
             "SELECT MAX(CAST(SPLIT_PART(cm_number, '-', 3) AS INTEGER)) "
             "FROM corrective_maintenance "
-            "WHERE cm_number LIKE %s",
+            "WHERE cm_number LIKE ?",
             (f'CM-{today}-%',)
         )
         result = cursor.fetchone()[0]
@@ -16322,7 +16286,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     INSERT INTO corrective_maintenance 
                     (cm_number, bfm_equipment_no, description, priority, assigned_technician, created_date)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     cm_number_var.get(),
                     bfm_var.get(),
@@ -16370,7 +16334,7 @@ class AITCMMSSystem:
             cursor.execute(
                 "SELECT MAX(CAST(SPLIT_PART(emp_number, '-', 3) AS INTEGER)) "
                 "FROM equipment_missing_parts "
-                "WHERE emp_number LIKE %s",
+                "WHERE emp_number LIKE ?",
                 (f'EMP-{today}-%',)
             )
             result = cursor.fetchone()[0]
@@ -16480,7 +16444,7 @@ class AITCMMSSystem:
                 try:
                     cursor = self.conn.cursor()
                     cursor.execute(
-                        "SELECT sap_material_no, tool_id_drawing_no FROM equipment WHERE bfm_equipment_no = %s",
+                        "SELECT sap_material_no, tool_id_drawing_no FROM equipment WHERE bfm_equipment_no = ?",
                         (selected_bfm,)
                     )
                     result = cursor.fetchone()
@@ -16600,7 +16564,7 @@ class AITCMMSSystem:
                     INSERT INTO equipment_missing_parts
                     (emp_number, bfm_equipment_no, description, priority, assigned_technician,
                      reported_date, missing_parts_description, notes, reported_by, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     emp_number_var.get(),
                     bfm_var.get(),
@@ -16664,7 +16628,7 @@ class AITCMMSSystem:
                 status, reported_date, missing_parts_description, notes, reported_by,
                 closed_date, closed_by
             FROM equipment_missing_parts
-            WHERE emp_number = %s
+            WHERE emp_number = ?
         ''', (emp_number,))
 
         emp_data = cursor.fetchone()
@@ -16807,15 +16771,15 @@ class AITCMMSSystem:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                     UPDATE equipment_missing_parts
-                    SET bfm_equipment_no = %s,
-                        description = %s,
-                        priority = %s,
-                        assigned_technician = %s,
-                        status = %s,
-                        missing_parts_description = %s,
-                        notes = %s,
+                    SET bfm_equipment_no = ?,
+                        description = ?,
+                        priority = ?,
+                        assigned_technician = ?,
+                        status = ?,
+                        missing_parts_description = ?,
+                        notes = ?,
                         updated_date = CURRENT_TIMESTAMP
-                    WHERE emp_number = %s
+                    WHERE emp_number = ?
                 ''', (
                     bfm_var.get(),
                     description_text.get('1.0', 'end-1c'),
@@ -16843,7 +16807,7 @@ class AITCMMSSystem:
             if result:
                 try:
                     cursor = self.conn.cursor()
-                    cursor.execute('DELETE FROM equipment_missing_parts WHERE emp_number = %s', (orig_emp_number,))
+                    cursor.execute('DELETE FROM equipment_missing_parts WHERE emp_number = ?', (orig_emp_number,))
                     self.conn.commit()
 
                     messagebox.showinfo("Success", f"Entry {orig_emp_number} deleted successfully!")
@@ -16882,7 +16846,7 @@ class AITCMMSSystem:
         cursor.execute('''
             SELECT emp_number, bfm_equipment_no, description, status, missing_parts_description
             FROM equipment_missing_parts
-            WHERE emp_number = %s
+            WHERE emp_number = ?
         ''', (emp_number,))
 
         emp_data = cursor.fetchone()
@@ -16962,11 +16926,11 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE equipment_missing_parts
                     SET status = 'Closed',
-                        closed_date = %s,
-                        closed_by = %s,
-                        notes = COALESCE(notes, '') || %s,
+                        closed_date = ?,
+                        closed_by = ?,
+                        notes = COALESCE(notes, '') || ?,
                         updated_date = CURRENT_TIMESTAMP
-                    WHERE emp_number = %s
+                    WHERE emp_number = ?
                 ''', (
                     validated_date,
                     self.user_name,
@@ -17010,7 +16974,7 @@ class AITCMMSSystem:
             SELECT cm_number, bfm_equipment_no, description, priority, assigned_technician, 
                 status, created_date, completion_date, labor_hours, notes, root_cause, corrective_action
             FROM corrective_maintenance 
-            WHERE cm_number = %s
+            WHERE cm_number = ?
         ''', (cm_number,))
 
         cm_data = cursor.fetchone()
@@ -17151,17 +17115,17 @@ class AITCMMSSystem:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                     UPDATE corrective_maintenance SET
-                    bfm_equipment_no = %s,
-                    description = %s,
-                    priority = %s,
-                    assigned_technician = %s,
-                    status = %s,
-                    labor_hours = %s,
-                    completion_date = %s,
-                    notes = %s,
-                    root_cause = %s,
-                    corrective_action = %s
-                    WHERE cm_number = %s
+                    bfm_equipment_no = ?,
+                    description = ?,
+                    priority = ?,
+                    assigned_technician = ?,
+                    status = ?,
+                    labor_hours = ?,
+                    completion_date = ?,
+                    notes = ?,
+                    root_cause = ?,
+                    corrective_action = ?
+                    WHERE cm_number = ?
                 ''', (
                     bfm_var.get(),
                     description_text.get('1.0', 'end-1c'),
@@ -17196,9 +17160,9 @@ class AITCMMSSystem:
                 try:
                     cursor = self.conn.cursor()
                     # First delete any child part requests (defensive; FK now also cascades)
-                    cursor.execute('DELETE FROM cm_parts_requests WHERE cm_number = %s', (orig_cm_number,))
+                    cursor.execute('DELETE FROM cm_parts_requests WHERE cm_number = ?', (orig_cm_number,))
                     # Then delete the CM itself
-                    cursor.execute('DELETE FROM corrective_maintenance WHERE cm_number = %s', (orig_cm_number,))
+                    cursor.execute('DELETE FROM corrective_maintenance WHERE cm_number = ?', (orig_cm_number,))
                     self.conn.commit()
                     messagebox.showinfo("Success", f"CM {orig_cm_number} deleted successfully!")
                     dialog.destroy()
@@ -17222,7 +17186,7 @@ class AITCMMSSystem:
         # View Parts button - shows parts consumed for this CM
         if hasattr(self, 'parts_integration'):
             cursor = self.conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM cm_parts_used WHERE cm_number = %s', (orig_cm_number,))
+            cursor.execute('SELECT COUNT(*) FROM cm_parts_used WHERE cm_number = ?', (orig_cm_number,))
             parts_count = cursor.fetchone()[0]
             
             if parts_count > 0:
@@ -17266,7 +17230,7 @@ class AITCMMSSystem:
             SELECT cm_number, bfm_equipment_no, description, assigned_technician, 
                 status, labor_hours, notes, root_cause, corrective_action
             FROM corrective_maintenance 
-            WHERE cm_number = %s
+            WHERE cm_number = ?
         ''', (cm_number,))
     
         cm_data = cursor.fetchone()
@@ -17449,12 +17413,12 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE corrective_maintenance
                     SET status = 'Closed',
-                        completion_date = %s,
-                        labor_hours = %s,
-                        root_cause = %s,
-                        corrective_action = %s,
-                        notes = %s
-                    WHERE cm_number = %s
+                        completion_date = ?,
+                        labor_hours = ?,
+                        root_cause = ?,
+                        corrective_action = ?,
+                        notes = ?
+                    WHERE cm_number = ?
                 ''', (
                     form_values['completion_date'],
                     form_values['labor_hours'],
@@ -17557,13 +17521,13 @@ class AITCMMSSystem:
             cursor.execute("SELECT COUNT(*) FROM equipment WHERE status = 'Active'")
             active_equipment = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE monthly_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE monthly_pm = 1')
             monthly_pm_equipment = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE six_month_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE six_month_pm = 1')
             six_month_pm_equipment = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE annual_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE annual_pm = 1')
             annual_pm_equipment = cursor.fetchone()[0]
             
             analytics += "EQUIPMENT OVERVIEW:\n"
@@ -17575,15 +17539,13 @@ class AITCMMSSystem:
             # PM completion statistics (last 30 days)
             cursor.execute('''
                 SELECT COUNT(*) FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '30 days'
-            ''')
+                WHERE completion_date >= date(CURRENT_DATE, '-30 day')''')
             recent_completions = cursor.fetchone()[0]
             
             cursor.execute('''
                 SELECT pm_type, COUNT(*)
                 FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '30 days'
-                GROUP BY pm_type
+                WHERE completion_date >= date(CURRENT_DATE, '-30 day')GROUP BY pm_type
             ''')
             pm_type_stats = cursor.fetchall()
             
@@ -17599,8 +17561,7 @@ class AITCMMSSystem:
                        COUNT(*) as completed_pms,
                        AVG(labor_hours + labor_minutes/60.0) as avg_hours
                 FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '30 days'
-                GROUP BY technician_name
+                WHERE completion_date >= date(CURRENT_DATE, '-30 day')GROUP BY technician_name
                 ORDER BY completed_pms DESC
             ''')
             tech_stats = cursor.fetchall()
@@ -17630,7 +17591,7 @@ class AITCMMSSystem:
                     COUNT(*) as scheduled,
                     COUNT(CASE WHEN status = 'Completed' THEN 1 END) as completed
                 FROM weekly_pm_schedules 
-                WHERE week_start_date = %s
+                WHERE week_start_date = ?
             ''', (current_week_start,))
             
             week_scheduled, week_completed = cursor.fetchone()
@@ -17737,13 +17698,13 @@ class AITCMMSSystem:
             analytics += f"Run to Failure: {rtf_equipment} ({rtf_equipment/total_equipment*100:.1f}%)\n\n"
         
             # PM Type Distribution
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE monthly_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE monthly_pm = 1')
             monthly_pm_count = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE six_month_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE six_month_pm = 1')
             six_month_pm_count = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE annual_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE annual_pm = 1')
             annual_pm_count = cursor.fetchone()[0]
             
             analytics += "PM TYPE REQUIREMENTS:\n"
@@ -17799,10 +17760,10 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT
                     CASE
-                        WHEN created_date >= CURRENT_DATE - INTERVAL '30 days' THEN 'Last 30 days'
-                        WHEN created_date >= CURRENT_DATE - INTERVAL '90 days' THEN 'Last 90 days'
-                        WHEN created_date >= CURRENT_DATE - INTERVAL '180 days' THEN 'Last 6 months'
-                        WHEN created_date >= CURRENT_DATE - INTERVAL '365 days' THEN 'Last year'
+                        WHEN created_date >= date(CURRENT_DATE, '-30 day')THEN 'Last 30 days'
+                        WHEN created_date >= date(CURRENT_DATE, '-90 day')THEN 'Last 90 days'
+                        WHEN created_date >= date(CURRENT_DATE, '-180 day')THEN 'Last 6 months'
+                        WHEN created_date >= date(CURRENT_DATE, '-365 day')THEN 'Last year'
                         ELSE 'Over 1 year'
                     END as age_category,
                     COUNT(*) as count
@@ -17883,12 +17844,11 @@ class AITCMMSSystem:
             # Monthly completion trends (last 12 months)
             cursor.execute('''
                 SELECT
-                    TO_CHAR(completion_date::date, 'YYYY-MM') as month,
+                    strftime('%Y-%m', completion_date) as month,
                     COUNT(*) as completions,
                     AVG(labor_hours + labor_minutes/60.0) as avg_hours
                 FROM pm_completions
-                WHERE completion_date::date >= CURRENT_DATE - INTERVAL '12 months'
-                GROUP BY TO_CHAR(completion_date::date, 'YYYY-MM')
+                WHERE completion_date >= date(CURRENT_DATE, '-12 month')GROUP BY strftime('%Y-%m', completion_date)
                 ORDER BY month DESC
             ''')
             monthly_trends = cursor.fetchall()
@@ -17910,16 +17870,16 @@ class AITCMMSSystem:
                 SELECT e.bfm_equipment_no, e.description, e.location,
                     e.last_monthly_pm, e.last_annual_pm,
                     CASE
-                        WHEN e.last_monthly_pm IS NULL OR e.last_monthly_pm + INTERVAL '30 days' < CURRENT_DATE THEN 'Monthly Overdue'
-                        WHEN e.last_annual_pm IS NULL OR e.last_annual_pm + INTERVAL '365 days' < CURRENT_DATE THEN 'Annual Overdue'
+                        WHEN e.last_monthly_pm IS NULL OR date(e.last_monthly_pm, '+30 day')< CURRENT_DATE THEN 'Monthly Overdue'
+                        WHEN e.last_annual_pm IS NULL OR date(e.last_annual_pm, '+365 day')< CURRENT_DATE THEN 'Annual Overdue'
                         ELSE 'Current'
                     END as pm_status
                 FROM equipment e
                 WHERE e.status = 'Active'
                 AND (
-                    (e.monthly_pm = TRUE AND (e.last_monthly_pm IS NULL OR e.last_monthly_pm + INTERVAL '30 days' < CURRENT_DATE))
+                    (e.monthly_pm = 1 AND (e.last_monthly_pm IS NULL OR date(e.last_monthly_pm, '+30 day')< CURRENT_DATE))
                     OR
-                    (e.annual_pm = TRUE AND (e.last_annual_pm IS NULL OR e.last_annual_pm + INTERVAL '365 days' < CURRENT_DATE))
+                    (e.annual_pm = 1 AND (e.last_annual_pm IS NULL OR date(e.last_annual_pm, '+365 day')< CURRENT_DATE))
                 )
                 ORDER BY e.bfm_equipment_no
                 LIMIT 25
@@ -18022,8 +17982,7 @@ class AITCMMSSystem:
                     AVG(pc.labor_hours + pc.labor_minutes/60.0) as avg_hours
                 FROM pm_completions pc
                 JOIN equipment e ON pc.bfm_equipment_no = e.bfm_equipment_no
-                WHERE pc.completion_date >= CURRENT_DATE - INTERVAL '90 days'
-                GROUP BY COALESCE(e.location, 'Unknown')
+                WHERE pc.completion_date >= date(CURRENT_DATE, '-90 day')GROUP BY COALESCE(e.location, 'Unknown')
                 ORDER BY total_pms DESC
             ''')
             location_pm_activity = cursor.fetchall()
@@ -18072,8 +18031,7 @@ class AITCMMSSystem:
                     ROUND(CAST(COUNT(pc.id) AS FLOAT) / COUNT(DISTINCT e.bfm_equipment_no), 2) as pms_per_equipment
                 FROM equipment e
                 LEFT JOIN pm_completions pc ON e.bfm_equipment_no = pc.bfm_equipment_no
-                    AND pc.completion_date >= CURRENT_DATE - INTERVAL '365 days'
-                WHERE e.status = 'Active'
+                    AND pc.completion_date >= date(CURRENT_DATE, '-365 day')WHERE e.status = 'Active'
                 GROUP BY COALESCE(e.location, 'Unknown')
                 HAVING equipment_count >= 3
                 ORDER BY pms_per_equipment DESC
@@ -18154,8 +18112,7 @@ class AITCMMSSystem:
                     AVG(labor_hours + labor_minutes/60.0) as avg_hours,
                     COUNT(DISTINCT bfm_equipment_no) as unique_equipment
                 FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '30 days'
-                GROUP BY technician_name
+                WHERE completion_date >= date(CURRENT_DATE, '-30 day')GROUP BY technician_name
                 ORDER BY recent_pms DESC
             ''')
             recent_activity = cursor.fetchall()
@@ -18177,7 +18134,7 @@ class AITCMMSSystem:
                 SELECT
                     technician_name,
                     COUNT(*) as cannot_find_count,
-                    COUNT(CASE WHEN reported_date >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) as recent_cf
+                    COUNT(CASE WHEN reported_date >= date(CURRENT_DATE, '-30 day')THEN 1 END) as recent_cf
                 FROM cannot_find_assets
                 WHERE status = 'Missing'
                 GROUP BY technician_name
@@ -18199,12 +18156,11 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT
                     technician_name,
-                    TO_CHAR(completion_date::date, 'YYYY-MM') as month,
+                    strftime('%Y-%m', completion_date) as month,
                     COUNT(*) as monthly_completions,
                     AVG(labor_hours + labor_minutes/60.0) as avg_hours
                 FROM pm_completions
-                WHERE completion_date::date >= CURRENT_DATE - INTERVAL '6 months'
-                GROUP BY technician_name, TO_CHAR(completion_date::date, 'YYYY-MM')
+                WHERE completion_date >= date(CURRENT_DATE, '-6 month')GROUP BY technician_name, strftime('%Y-%m', completion_date)
                 ORDER BY technician_name, month DESC
             ''')
             monthly_workload = cursor.fetchall()
@@ -18298,7 +18254,7 @@ class AITCMMSSystem:
             cursor.execute("SELECT COUNT(*) FROM equipment WHERE status = 'Active'")
             active_equipment = cursor.fetchone()[0]
         
-            cursor.execute("SELECT COUNT(*) FROM pm_completions WHERE completion_date >= CURRENT_DATE - INTERVAL '30 days'")
+            cursor.execute("SELECT COUNT(*) FROM pm_completions WHERE completion_date >= date(CURRENT_DATE, '-30 day')")
             recent_pms = cursor.fetchone()[0]
         
             cursor.execute("SELECT COUNT(*) FROM cannot_find_assets WHERE status = 'Missing'")
@@ -18374,11 +18330,11 @@ class AITCMMSSystem:
             text += f"Active Equipment: {active_equipment} ({active_equipment/total_equipment*100:.1f}%)\n\n"
         
             # PM requirements
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE monthly_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE monthly_pm = 1')
             monthly_count = cursor.fetchone()[0]
             text += f"Equipment requiring Monthly PM: {monthly_count}\n"
 
-            cursor.execute('SELECT COUNT(*) FROM equipment WHERE annual_pm = TRUE')
+            cursor.execute('SELECT COUNT(*) FROM equipment WHERE annual_pm = 1')
             annual_count = cursor.fetchone()[0]
             text += f"Equipment requiring Annual PM: {annual_count}\n"
         
@@ -18522,7 +18478,7 @@ class AITCMMSSystem:
             # Monthly completion data (last 24 months)
             cursor.execute('''
                 SELECT
-                    TO_CHAR(completion_date::date, 'YYYY-MM') as month,
+                    strftime('%Y-%m', completion_date) as month,
                     COUNT(*) as total_completions,
                     COUNT(CASE WHEN pm_type = 'Monthly' THEN 1 END) as monthly_pms,
                     COUNT(CASE WHEN pm_type = 'Annual' THEN 1 END) as annual_pms,
@@ -18531,8 +18487,7 @@ class AITCMMSSystem:
                     COUNT(DISTINCT technician_name) as active_technicians,
                     COUNT(DISTINCT bfm_equipment_no) as unique_equipment
                 FROM pm_completions
-                WHERE completion_date::date >= CURRENT_DATE - INTERVAL '24 months'
-                GROUP BY TO_CHAR(completion_date::date, 'YYYY-MM')
+                WHERE completion_date >= date(CURRENT_DATE, '-24 month')GROUP BY strftime('%Y-%m', completion_date)
                 ORDER BY month ASC
             ''')
 
@@ -18697,7 +18652,7 @@ class AITCMMSSystem:
                        AVG(pc.labor_hours + pc.labor_minutes/60.0) as avg_hours,
                        MIN(pc.completion_date) as first_pm,
                        MAX(pc.completion_date) as last_pm,
-                       COUNT(CASE WHEN pc.completion_date >= CURRENT_DATE - INTERVAL '90 days' THEN 1 END) as recent_pms
+                       COUNT(CASE WHEN pc.completion_date >= date(CURRENT_DATE, '-90 day')THEN 1 END) as recent_pms
                 FROM equipment e
                 LEFT JOIN pm_completions pc ON e.bfm_equipment_no = pc.bfm_equipment_no
                 WHERE e.status = 'Active'
@@ -18725,12 +18680,11 @@ class AITCMMSSystem:
             # Equipment with increasing maintenance needs
             cursor.execute('''
                 SELECT bfm_equipment_no,
-                       COUNT(CASE WHEN completion_date >= CURRENT_DATE - INTERVAL '90 days' THEN 1 END) as last_90_days,
-                       COUNT(CASE WHEN completion_date >= CURRENT_DATE - INTERVAL '180 days' AND completion_date < CURRENT_DATE - INTERVAL '90 days' THEN 1 END) as prev_90_days,
+                       COUNT(CASE WHEN completion_date >= date(CURRENT_DATE, '-90 day')THEN 1 END) as last_90_days,
+                       COUNT(CASE WHEN completion_date >= date(CURRENT_DATE, '-180 day')AND completion_date < date(CURRENT_DATE, '-90 day')THEN 1 END) as prev_90_days,
                        COUNT(*) as total_pms
                 FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '180 days'
-                GROUP BY bfm_equipment_no
+                WHERE completion_date >= date(CURRENT_DATE, '-180 day')GROUP BY bfm_equipment_no
                 HAVING last_90_days > prev_90_days AND prev_90_days > 0
                 ORDER BY (last_90_days - prev_90_days) DESC
                 LIMIT 10
@@ -18756,7 +18710,7 @@ class AITCMMSSystem:
                        JULIANDAY('now') - JULIANDAY(MAX(pc.completion_date)) as days_since_last_pm
                 FROM equipment e
                 LEFT JOIN pm_completions pc ON e.bfm_equipment_no = pc.bfm_equipment_no
-                WHERE e.status = 'Active' AND e.monthly_pm = TRUE
+                WHERE e.status = 'Active' AND e.monthly_pm = 1
                 GROUP BY e.bfm_equipment_no, e.description, e.location
                 HAVING days_since_last_pm > 60 OR last_pm_date IS NULL
                 ORDER BY days_since_last_pm DESC NULLS LAST
@@ -18788,8 +18742,7 @@ class AITCMMSSystem:
                        ROUND(CAST(COUNT(pc.id) AS FLOAT) / COUNT(DISTINCT e.bfm_equipment_no), 2) as pms_per_equipment
                 FROM equipment e
                 LEFT JOIN pm_completions pc ON e.bfm_equipment_no = pc.bfm_equipment_no
-                    AND pc.completion_date >= CURRENT_DATE - INTERVAL '365 days'
-                WHERE e.status = 'Active'
+                    AND pc.completion_date >= date(CURRENT_DATE, '-365 day')WHERE e.status = 'Active'
                 GROUP BY COALESCE(e.location, 'Unknown')
                 HAVING equipment_count >= 3
                 ORDER BY pms_per_equipment DESC
@@ -18837,12 +18790,11 @@ class AITCMMSSystem:
             # Monthly performance trends for each technician
             cursor.execute('''
                 SELECT technician_name,
-                       TO_CHAR(completion_date::date, 'YYYY-MM') as month,
+                       strftime('%Y-%m', completion_date) as month,
                        COUNT(*) as completions,
                        AVG(labor_hours + labor_minutes/60.0) as avg_hours
                 FROM pm_completions
-                WHERE completion_date::date >= CURRENT_DATE - INTERVAL '12 months'
-                GROUP BY technician_name, TO_CHAR(completion_date::date, 'YYYY-MM')
+                WHERE completion_date >= date(CURRENT_DATE, '-12 month')GROUP BY technician_name, strftime('%Y-%m', completion_date)
                 ORDER BY technician_name, month
             ''')
 
@@ -18885,12 +18837,11 @@ class AITCMMSSystem:
                        COUNT(*) as total_completions,
                        AVG(labor_hours + labor_minutes/60.0) as avg_hours_per_pm,
                        COUNT(DISTINCT bfm_equipment_no) as unique_equipment,
-                       COUNT(CASE WHEN completion_date >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) as recent_completions,
+                       COUNT(CASE WHEN completion_date >= date(CURRENT_DATE, '-30 day')THEN 1 END) as recent_completions,
                        MIN(completion_date) as first_completion,
                        MAX(completion_date) as last_completion
                 FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '12 months'
-                GROUP BY technician_name
+                WHERE completion_date >= date(CURRENT_DATE, '-12 month')GROUP BY technician_name
                 ORDER BY total_completions DESC
             ''')
 
@@ -18973,13 +18924,12 @@ class AITCMMSSystem:
 
             # Monthly PM type distribution
             cursor.execute('''
-                SELECT TO_CHAR(completion_date::date, 'YYYY-MM') as month,
+                SELECT strftime('%Y-%m', completion_date) as month,
                        pm_type,
                        COUNT(*) as completions,
                        AVG(labor_hours + labor_minutes/60.0) as avg_hours
                 FROM pm_completions
-                WHERE completion_date::date >= CURRENT_DATE - INTERVAL '12 months'
-                GROUP BY TO_CHAR(completion_date::date, 'YYYY-MM'), pm_type
+                WHERE completion_date >= date(CURRENT_DATE, '-12 month')GROUP BY strftime('%Y-%m', completion_date), pm_type
                 ORDER BY month, pm_type
             ''')
 
@@ -19024,8 +18974,7 @@ class AITCMMSSystem:
                        COUNT(DISTINCT technician_name) as technicians_involved,
                        COUNT(DISTINCT bfm_equipment_no) as equipment_serviced
                 FROM pm_completions
-                WHERE completion_date >= CURRENT_DATE - INTERVAL '12 months'
-                GROUP BY pm_type
+                WHERE completion_date >= date(CURRENT_DATE, '-12 month')GROUP BY pm_type
                 ORDER BY total_completions DESC
             ''')
 
@@ -19100,16 +19049,15 @@ class AITCMMSSystem:
             cursor.execute('''
                 SELECT
                     CASE
-                        WHEN EXTRACT(MONTH FROM completion_date::date) IN (12, 1, 2) THEN 'Winter'
-                        WHEN EXTRACT(MONTH FROM completion_date::date) IN (3, 4, 5) THEN 'Spring'
-                        WHEN EXTRACT(MONTH FROM completion_date::date) IN (6, 7, 8) THEN 'Summer'
-                        WHEN EXTRACT(MONTH FROM completion_date::date) IN (9, 10, 11) THEN 'Fall'
+                        WHEN CAST(strftime('%m', completion_date) AS INTEGER) IN (12, 1, 2) THEN 'Winter'
+                        WHEN CAST(strftime('%m', completion_date) AS INTEGER) IN (3, 4, 5) THEN 'Spring'
+                        WHEN CAST(strftime('%m', completion_date) AS INTEGER) IN (6, 7, 8) THEN 'Summer'
+                        WHEN CAST(strftime('%m', completion_date) AS INTEGER) IN (9, 10, 11) THEN 'Fall'
                     END as season,
                     pm_type,
                     COUNT(*) as completions
                 FROM pm_completions
-                WHERE completion_date::date >= CURRENT_DATE - INTERVAL '12 months'
-                GROUP BY season, pm_type
+                WHERE completion_date >= date(CURRENT_DATE, '-12 month')GROUP BY season, pm_type
                 ORDER BY season, pm_type
             ''')
 
@@ -19222,13 +19170,13 @@ class AITCMMSSystem:
             cursor = self.conn.cursor()
         
             # Get summary statistics
-            cursor.execute("SELECT COUNT(*) FROM pm_completions WHERE completion_date >= CURRENT_DATE - INTERVAL '12 months'")
+            cursor.execute("SELECT COUNT(*) FROM pm_completions WHERE completion_date >= date(CURRENT_DATE, '-12 month')")
             total_pms_year = cursor.fetchone()[0]
         
-            cursor.execute("SELECT COUNT(*) FROM pm_completions WHERE completion_date >= CURRENT_DATE - INTERVAL '30 days'")
+            cursor.execute("SELECT COUNT(*) FROM pm_completions WHERE completion_date >= date(CURRENT_DATE, '-30 day')")
             total_pms_month = cursor.fetchone()[0]
         
-            cursor.execute("SELECT AVG(labor_hours + labor_minutes/60.0) FROM pm_completions WHERE completion_date >= CURRENT_DATE - INTERVAL '12 months'")
+            cursor.execute("SELECT AVG(labor_hours + labor_minutes/60.0) FROM pm_completions WHERE completion_date >= date(CURRENT_DATE, '-12 month')")
             avg_hours = cursor.fetchone()[0] or 0
 
             story.append(Paragraph("EXECUTIVE SUMMARY", styles['Heading1']))
@@ -19472,10 +19420,10 @@ class AITCMMSSystem:
                                     (sap_material_no, bfm_equipment_no, description, tool_id_drawing_no, location, 
                                     master_lin, monthly_pm, six_month_pm, annual_pm, last_monthly_pm, 
                                     last_six_month_pm, last_annual_pm, next_monthly_pm, next_six_month_pm, next_annual_pm)
-                                    VALUES (%s, %s, %s , %s , %s, %s, %s, %s, %s, %s, %s, %s,
-                                        CASE WHEN %s IS NOT NULL THEN %s::date + INTERVAL '30 days' ELSE NULL END,
-                                        CASE WHEN %s IS NOT NULL THEN %s::date + INTERVAL '180 days' ELSE NULL END,
-                                        CASE WHEN %s IS NOT NULL THEN %s::date + INTERVAL '365 days' ELSE NULL END)
+                                    VALUES (?, ?, ? , ? , ?, ?, ?, ?, ?, ?, ?, ?,
+                                        CASE WHEN ? IS NOT NULL THEN date(?, '+30 day')ELSE NULL END,
+                                        CASE WHEN ? IS NOT NULL THEN date(?, '+180 day')ELSE NULL END,
+                                        CASE WHEN ? IS NOT NULL THEN date(?, '+365 day')ELSE NULL END)
                                     ON CONFLICT (bfm_equipment_no) DO UPDATE SET
                                         sap_material_no = EXCLUDED.sap_material_no,
                                         description = EXCLUDED.description,
@@ -19649,21 +19597,21 @@ class AITCMMSSystem:
         # Use TRIM() to match BFM numbers even if they have whitespace/newlines
 
         # Delete PM schedules
-        cursor.execute('DELETE FROM weekly_pm_schedules WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
+        cursor.execute('DELETE FROM weekly_pm_schedules WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
 
         # Delete PM completions
-        cursor.execute('DELETE FROM pm_completions WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
+        cursor.execute('DELETE FROM pm_completions WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
 
         # Delete from corrective maintenance
-        cursor.execute('DELETE FROM corrective_maintenance WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
+        cursor.execute('DELETE FROM corrective_maintenance WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
 
         # Delete from special status tables
-        cursor.execute('DELETE FROM cannot_find_assets WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
-        cursor.execute('DELETE FROM run_to_failure_assets WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
-        cursor.execute('DELETE FROM deactivated_assets WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
+        cursor.execute('DELETE FROM cannot_find_assets WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
+        cursor.execute('DELETE FROM run_to_failure_assets WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
+        cursor.execute('DELETE FROM deactivated_assets WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
 
         # Finally delete from equipment table
-        cursor.execute('DELETE FROM equipment WHERE TRIM(bfm_equipment_no) = %s', (bfm_no,))
+        cursor.execute('DELETE FROM equipment WHERE TRIM(bfm_equipment_no) = ?', (bfm_no,))
 
         # Log the deletion
         print(f"Deleted equipment with BFM: {bfm_no}")
@@ -19824,6 +19772,28 @@ class AITCMMSSystem:
         ttk.Entry(pic2_frame, textvariable=picture_2_var, width=30).pack(side='left')
         ttk.Button(pic2_frame, text="Browse", command=lambda: browse_image(picture_2_var)).pack(side='left', padx=5)
 
+
+        # ── Priority Level (P1 / P2 / P3) – controls which CSV file is updated ──
+        priority_frame = ttk.LabelFrame(scrollable_frame, text="Asset Priority Level (PM Scheduling)", padding=10)
+        priority_frame.grid(row=len(fields)+3, column=0, columnspan=2, padx=10, pady=10, sticky='ew')
+
+        priority_var = tk.IntVar(value=0)   # 0 = no priority
+
+        ttk.Label(priority_frame,
+                  text="Select priority for CSV tracking (determines PM scheduling order):").pack(anchor='w', padx=5, pady=2)
+
+        radio_row = ttk.Frame(priority_frame)
+        radio_row.pack(fill='x', padx=5, pady=2)
+
+        ttk.Radiobutton(radio_row, text="No Priority",   variable=priority_var, value=0).pack(side='left', padx=8)
+        ttk.Radiobutton(radio_row, text="P1 – Critical", variable=priority_var, value=1).pack(side='left', padx=8)
+        ttk.Radiobutton(radio_row, text="P2 – High",     variable=priority_var, value=2).pack(side='left', padx=8)
+        ttk.Radiobutton(radio_row, text="P3 – Medium",   variable=priority_var, value=3).pack(side='left', padx=8)
+
+        ttk.Label(priority_frame,
+                  text="P1 = Critical assets (e.g. wing lifters)  |  P2 = High priority  |  P3 = Medium priority",
+                  foreground='gray', font=('Arial', 8)).pack(anchor='w', padx=5, pady=1)
+
         def save_equipment():
             try:
                 # Check if equipment is being marked as deactivated
@@ -19849,7 +19819,7 @@ class AITCMMSSystem:
 
                         # Verify uniqueness (in case of collision)
                         cursor = self.conn.cursor()
-                        cursor.execute('SELECT COUNT(*) FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                        cursor.execute('SELECT COUNT(*) FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
                         result = cursor.fetchone()
                         if result and result[0] > 0:
                             # If collision, add another random suffix
@@ -19865,7 +19835,7 @@ class AITCMMSSystem:
                 else:
                     # Verify BFM number doesn't already exist
                     cursor = self.conn.cursor()
-                    cursor.execute('SELECT COUNT(*) FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                    cursor.execute('SELECT COUNT(*) FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
                     result = cursor.fetchone()
                     cursor.close()
                     if result and result[0] > 0:
@@ -19945,7 +19915,7 @@ class AITCMMSSystem:
                      location, master_lin, weekly_pm, monthly_pm, six_month_pm, annual_pm,
                      next_weekly_pm, next_monthly_pm, next_six_month_pm, next_annual_pm,
                      picture_1_data, picture_2_data, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     entries["SAP Material No:"].get().strip(),
                     bfm_no,
@@ -19976,7 +19946,7 @@ class AITCMMSSystem:
                         INSERT INTO deactivated_assets
                         (bfm_equipment_no, description, location, deactivated_by,
                          deactivated_date, reason, status, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, 'Deactivated', %s)
+                        VALUES (?, ?, ?, ?, ?, ?, 'Deactivated', ?)
                     ''', (
                         bfm_no,
                         description,
@@ -19990,6 +19960,20 @@ class AITCMMSSystem:
                 # Commit the transaction
                 self.conn.commit()
                 cursor.close()
+
+                # ── Sync to priority CSV file (P1 / P2 / P3) ──
+                _selected_priority = priority_var.get()
+                try:
+                    sync_asset_to_csv(
+                        bfm_no=bfm_no,
+                        description=description,
+                        location=location,
+                        sap_no=entries["SAP Material No:"].get().strip(),
+                        tool_id=entries["Tool ID/Drawing No:"].get().strip(),
+                        priority=_selected_priority if _selected_priority in (1, 2, 3) else None,
+                    )
+                except Exception as _csv_err:
+                    print(f"Warning: CSV sync failed: {_csv_err}")
 
                 # Show appropriate success message
                 if is_deactivated:
@@ -20024,7 +20008,7 @@ class AITCMMSSystem:
 
         # Buttons
         button_frame = ttk.Frame(scrollable_frame)
-        button_frame.grid(row=len(fields)+3, column=0, columnspan=2, pady=10)
+        button_frame.grid(row=len(fields)+4, column=0, columnspan=2, pady=10)
 
         ttk.Button(button_frame, text="Save", command=save_equipment).pack(side='left', padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side='left', padx=5)
@@ -20047,7 +20031,7 @@ class AITCMMSSystem:
         # Fetch full equipment data including photos
         try:
             with db_pool.get_cursor(commit=False) as cursor:
-                cursor.execute('SELECT * FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute('SELECT * FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
                 equipment_data = cursor.fetchone()
 
                 if not equipment_data:
@@ -20291,7 +20275,7 @@ class AITCMMSSystem:
         if current_status == 'Cannot Find':
             try:
                 with db_pool.get_cursor(commit=False) as cursor:
-                    cursor.execute('SELECT technician_name FROM cannot_find_assets WHERE bfm_equipment_no = %s', (bfm_no,))
+                    cursor.execute('SELECT technician_name FROM cannot_find_assets WHERE bfm_equipment_no = ?', (bfm_no,))
                     cf_data = cursor.fetchone()
                     if cf_data:
                         tech_var.set(cf_data[0])
@@ -20312,7 +20296,7 @@ class AITCMMSSystem:
         if current_status == 'Deactivated':
             try:
                 with db_pool.get_cursor(commit=False) as cursor:
-                    cursor.execute('SELECT deactivated_by, reason FROM deactivated_assets WHERE bfm_equipment_no = %s', (bfm_no,))
+                    cursor.execute('SELECT deactivated_by, reason FROM deactivated_assets WHERE bfm_equipment_no = ?', (bfm_no,))
                     deact_data = cursor.fetchone()
                     if deact_data:
                         deact_tech_var.set(deact_data[0])
@@ -20513,7 +20497,7 @@ class AITCMMSSystem:
                     # If BFM changed, verify the new BFM doesn't already exist
                     if bfm_changed:
                         log_update(f"Checking if new BFM '{new_bfm_no}' already exists...")
-                        cursor.execute('SELECT COUNT(*) as count FROM equipment WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('SELECT COUNT(*) as count FROM equipment WHERE bfm_equipment_no = ?', (new_bfm_no,))
                         result = cursor.fetchone()
                         if result['count'] > 0:
                             log_update(f"New BFM already exists! Count: {result['count']}")
@@ -20528,24 +20512,24 @@ class AITCMMSSystem:
 
                     cursor.execute('''
                         UPDATE equipment
-                        SET sap_material_no = %s,
-                            bfm_equipment_no = %s,
-                            description = %s,
-                            tool_id_drawing_no = %s,
-                            location = %s,
-                            master_lin = %s,
-                            weekly_pm = %s,
-                            monthly_pm = %s,
-                            six_month_pm = %s,
-                            annual_pm = %s,
-                            next_weekly_pm = %s,
-                            next_monthly_pm = %s,
-                            next_six_month_pm = %s,
-                            next_annual_pm = %s,
-                            status = %s,
-                            picture_1_data = %s,
-                            picture_2_data = %s
-                        WHERE bfm_equipment_no = %s
+                        SET sap_material_no = ?,
+                            bfm_equipment_no = ?,
+                            description = ?,
+                            tool_id_drawing_no = ?,
+                            location = ?,
+                            master_lin = ?,
+                            weekly_pm = ?,
+                            monthly_pm = ?,
+                            six_month_pm = ?,
+                            annual_pm = ?,
+                            next_weekly_pm = ?,
+                            next_monthly_pm = ?,
+                            next_six_month_pm = ?,
+                            next_annual_pm = ?,
+                            status = ?,
+                            picture_1_data = ?,
+                            picture_2_data = ?
+                        WHERE bfm_equipment_no = ?
                     ''', (
                         entries["SAP Material No:"].get().strip(),
                         new_bfm_no,  # New BFM number (already stripped above)
@@ -20578,33 +20562,33 @@ class AITCMMSSystem:
                     # If BFM changed, update all related tables with foreign keys
                     if bfm_changed:
                         # Update cannot_find_assets
-                        cursor.execute('UPDATE cannot_find_assets SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE cannot_find_assets SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
 
                         # Update deactivated_assets
-                        cursor.execute('UPDATE deactivated_assets SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE deactivated_assets SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
 
                         # Update run_to_failure_assets
-                        cursor.execute('UPDATE run_to_failure_assets SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE run_to_failure_assets SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
 
                         # Update PM schedules
-                        cursor.execute('UPDATE weekly_pm_schedules SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE weekly_pm_schedules SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
-                        cursor.execute('UPDATE monthly_pm_schedules SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE monthly_pm_schedules SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
-                        cursor.execute('UPDATE six_month_pm_schedules SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE six_month_pm_schedules SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
-                        cursor.execute('UPDATE annual_pm_schedules SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE annual_pm_schedules SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
 
                         # Update PM completions
-                        cursor.execute('UPDATE pm_completions SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE pm_completions SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
 
                         # Update corrective maintenance
-                        cursor.execute('UPDATE corrective_maintenance SET bfm_equipment_no = %s WHERE bfm_equipment_no = %s',
+                        cursor.execute('UPDATE corrective_maintenance SET bfm_equipment_no = ? WHERE bfm_equipment_no = ?',
                                      (new_bfm_no, bfm_no))
 
                     # Handle Run to Failure status
@@ -20612,7 +20596,7 @@ class AITCMMSSystem:
                         cursor.execute('''
                             INSERT INTO run_to_failure_assets
                             (bfm_equipment_no, description, location, technician_name, completion_date, labor_hours, notes)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT (bfm_equipment_no)
                             DO UPDATE SET
                                 description = EXCLUDED.description,
@@ -20632,10 +20616,10 @@ class AITCMMSSystem:
                         ))
 
                         # Remove from Cannot Find if it was there
-                        cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
 
                     elif not run_to_failure_var.get() and current_status == 'Run to Failure':
-                        cursor.execute('DELETE FROM run_to_failure_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('DELETE FROM run_to_failure_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
 
                     # Handle Cannot Find status - NEW!
                     if cannot_find_var.get():
@@ -20649,7 +20633,7 @@ class AITCMMSSystem:
                         cursor.execute('''
                             INSERT INTO cannot_find_assets
                             (bfm_equipment_no, description, location, technician_name, reported_date, status, notes)
-                            VALUES (%s, %s, %s, %s, %s, 'Missing', %s)
+                            VALUES (?, ?, ?, ?, ?, 'Missing', ?)
                             ON CONFLICT (bfm_equipment_no)
                             DO UPDATE SET
                                 description = EXCLUDED.description,
@@ -20668,18 +20652,18 @@ class AITCMMSSystem:
                         ))
 
                         # Remove from Run to Failure if it was there
-                        cursor.execute('DELETE FROM run_to_failure_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('DELETE FROM run_to_failure_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
 
                         # Update any scheduled PMs for this asset to "Cannot Find" status
                         cursor.execute('''
                             UPDATE weekly_pm_schedules
                             SET status = 'Cannot Find'
-                            WHERE bfm_equipment_no = %s AND status = 'Scheduled'
+                            WHERE bfm_equipment_no = ? AND status = 'Scheduled'
                         ''', (new_bfm_no,))
 
                     elif not cannot_find_var.get() and current_status == 'Cannot Find':
                         # Remove from Cannot Find table
-                        cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
                         technician = None  # Set to None when unmarking
 
                     # Handle Deactivated status - NEW!
@@ -20695,7 +20679,7 @@ class AITCMMSSystem:
                         cursor.execute('''
                             INSERT INTO deactivated_assets
                             (bfm_equipment_no, description, location, deactivated_by, deactivated_date, reason, status, notes)
-                            VALUES (%s, %s, %s, %s, %s, %s, 'Deactivated', %s)
+                            VALUES (?, ?, ?, ?, ?, ?, 'Deactivated', ?)
                             ON CONFLICT (bfm_equipment_no)
                             DO UPDATE SET
                                 description = EXCLUDED.description,
@@ -20716,19 +20700,19 @@ class AITCMMSSystem:
                         ))
 
                         # Remove from other tables if it was there
-                        cursor.execute('DELETE FROM run_to_failure_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
-                        cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('DELETE FROM run_to_failure_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
+                        cursor.execute('DELETE FROM cannot_find_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
 
                         # Update any scheduled PMs for this asset to "Deactivated" status
                         cursor.execute('''
                             UPDATE weekly_pm_schedules
                             SET status = 'Deactivated'
-                            WHERE bfm_equipment_no = %s AND status = 'Scheduled'
+                            WHERE bfm_equipment_no = ? AND status = 'Scheduled'
                         ''', (new_bfm_no,))
 
                     elif not deactivated_var.get() and current_status == 'Deactivated':
                         # Remove from Deactivated table
-                        cursor.execute('DELETE FROM deactivated_assets WHERE bfm_equipment_no = %s', (new_bfm_no,))
+                        cursor.execute('DELETE FROM deactivated_assets WHERE bfm_equipment_no = ?', (new_bfm_no,))
 
                 # Show appropriate success message
                 if run_to_failure_var.get():
@@ -20861,7 +20845,7 @@ class AITCMMSSystem:
 
         if display_bfms:
             # Single query for all equipment instead of one query per equipment
-            placeholders = ','.join(['%s'] * len(display_bfms))
+            placeholders = ','.join(['?'] * len(display_bfms))
             cursor.execute(f'SELECT bfm_equipment_no, description FROM equipment WHERE bfm_equipment_no IN ({placeholders})', tuple(display_bfms))
             equipment_details = cursor.fetchall()
 
@@ -20955,8 +20939,8 @@ class AITCMMSSystem:
                 for bfm in selected_bfms:
                     cursor.execute('''
                         UPDATE equipment 
-                        SET monthly_pm = %s, six_month_pm = %s, annual_pm = %s
-                        WHERE bfm_equipment_no = %s
+                        SET monthly_pm = ?, six_month_pm = ?, annual_pm = ?
+                        WHERE bfm_equipment_no = ?
                     ''', (monthly_pm, six_month_pm, annual_pm, bfm))
                 
                     if cursor.rowcount > 0:
@@ -21065,10 +21049,10 @@ class AITCMMSSystem:
                 SELECT e.sap_material_no, e.bfm_equipment_no, e.description, e.location, e.master_lin,
                        e.monthly_pm, e.six_month_pm, e.annual_pm, e.status,
                        CASE
-                           WHEN (COALESCE(e.weekly_pm, FALSE) = FALSE
-                                 AND COALESCE(e.monthly_pm, FALSE) = FALSE
-                                 AND COALESCE(e.six_month_pm, FALSE) = FALSE
-                                 AND COALESCE(e.annual_pm, FALSE) = FALSE) THEN 'INACTIVE'
+                           WHEN (COALESCE(e.weekly_pm, FALSE) = 0
+                                 AND COALESCE(e.monthly_pm, FALSE) = 0
+                                 AND COALESCE(e.six_month_pm, FALSE) = 0
+                                 AND COALESCE(e.annual_pm, FALSE) = 0) THEN 'INACTIVE'
                            WHEN d.bfm_equipment_no IS NOT NULL THEN 'INACTIVE'
                            WHEN c.bfm_equipment_no IS NOT NULL THEN 'INACTIVE'
                            WHEN r.bfm_equipment_no IS NOT NULL THEN 'INACTIVE'
@@ -21086,7 +21070,7 @@ class AITCMMSSystem:
             # Status filter (ACTIVE/INACTIVE)
             if selected_status == "ACTIVE":
                 query += '''
-                    AND (e.weekly_pm = TRUE OR e.monthly_pm = TRUE OR e.six_month_pm = TRUE OR e.annual_pm = TRUE)
+                    AND (e.weekly_pm = 1 OR e.monthly_pm = 1 OR e.six_month_pm = 1 OR e.annual_pm = 1)
                     AND d.bfm_equipment_no IS NULL
                     AND c.bfm_equipment_no IS NULL
                     AND r.bfm_equipment_no IS NULL
@@ -21094,10 +21078,10 @@ class AITCMMSSystem:
                 '''
             elif selected_status == "INACTIVE":
                 query += '''
-                    AND ((COALESCE(e.weekly_pm, FALSE) = FALSE
-                          AND COALESCE(e.monthly_pm, FALSE) = FALSE
-                          AND COALESCE(e.six_month_pm, FALSE) = FALSE
-                          AND COALESCE(e.annual_pm, FALSE) = FALSE)
+                    AND ((COALESCE(e.weekly_pm, FALSE) = 0
+                          AND COALESCE(e.monthly_pm, FALSE) = 0
+                          AND COALESCE(e.six_month_pm, FALSE) = 0
+                          AND COALESCE(e.annual_pm, FALSE) = 0)
                          OR d.bfm_equipment_no IS NOT NULL
                          OR c.bfm_equipment_no IS NOT NULL
                          OR r.bfm_equipment_no IS NOT NULL
@@ -21106,28 +21090,28 @@ class AITCMMSSystem:
 
             # Location filter
             if selected_location != "All Locations":
-                query += " AND e.location = %s"
+                query += " AND e.location = ?"
                 params.append(selected_location)
 
             # PM cycle filters (OR logic - equipment must have at least one selected PM type)
             if monthly_filter or six_month_filter or annual_filter:
                 pm_conditions = []
                 if monthly_filter:
-                    pm_conditions.append("e.monthly_pm = TRUE")
+                    pm_conditions.append("e.monthly_pm = 1")
                 if six_month_filter:
-                    pm_conditions.append("e.six_month_pm = TRUE")
+                    pm_conditions.append("e.six_month_pm = 1")
                 if annual_filter:
-                    pm_conditions.append("e.annual_pm = TRUE")
+                    pm_conditions.append("e.annual_pm = 1")
                 query += f" AND ({' OR '.join(pm_conditions)})"
 
             # Search term filter - use LOWER() for case-insensitive search
             if search_term:
                 query += ''' AND (
-                    LOWER(e.sap_material_no) LIKE LOWER(%s) OR
-                    LOWER(e.bfm_equipment_no) LIKE LOWER(%s) OR
-                    LOWER(e.description) LIKE LOWER(%s) OR
-                    LOWER(e.location) LIKE LOWER(%s) OR
-                    LOWER(e.master_lin) LIKE LOWER(%s)
+                    LOWER(e.sap_material_no) LIKE LOWER(?) OR
+                    LOWER(e.bfm_equipment_no) LIKE LOWER(?) OR
+                    LOWER(e.description) LIKE LOWER(?) OR
+                    LOWER(e.location) LIKE LOWER(?) OR
+                    LOWER(e.master_lin) LIKE LOWER(?)
                 )'''
                 search_param = f'%{search_term}%'
                 params.extend([search_param] * 5)
@@ -21149,7 +21133,7 @@ class AITCMMSSystem:
                 # Status filter
                 if selected_status == "ACTIVE":
                     count_query += '''
-                        AND (e.weekly_pm = TRUE OR e.monthly_pm = TRUE OR e.six_month_pm = TRUE OR e.annual_pm = TRUE)
+                        AND (e.weekly_pm = 1 OR e.monthly_pm = 1 OR e.six_month_pm = 1 OR e.annual_pm = 1)
                         AND d.bfm_equipment_no IS NULL
                         AND c.bfm_equipment_no IS NULL
                         AND r.bfm_equipment_no IS NULL
@@ -21157,10 +21141,10 @@ class AITCMMSSystem:
                     '''
                 elif selected_status == "INACTIVE":
                     count_query += '''
-                        AND ((COALESCE(e.weekly_pm, FALSE) = FALSE
-                              AND COALESCE(e.monthly_pm, FALSE) = FALSE
-                              AND COALESCE(e.six_month_pm, FALSE) = FALSE
-                              AND COALESCE(e.annual_pm, FALSE) = FALSE)
+                        AND ((COALESCE(e.weekly_pm, FALSE) = 0
+                              AND COALESCE(e.monthly_pm, FALSE) = 0
+                              AND COALESCE(e.six_month_pm, FALSE) = 0
+                              AND COALESCE(e.annual_pm, FALSE) = 0)
                              OR d.bfm_equipment_no IS NOT NULL
                              OR c.bfm_equipment_no IS NOT NULL
                              OR r.bfm_equipment_no IS NOT NULL
@@ -21168,24 +21152,24 @@ class AITCMMSSystem:
                     '''
 
                 if selected_location != "All Locations":
-                    count_query += " AND e.location = %s"
+                    count_query += " AND e.location = ?"
                     count_params.append(selected_location)
                 if monthly_filter or six_month_filter or annual_filter:
                     pm_conditions = []
                     if monthly_filter:
-                        pm_conditions.append("e.monthly_pm = TRUE")
+                        pm_conditions.append("e.monthly_pm = 1")
                     if six_month_filter:
-                        pm_conditions.append("e.six_month_pm = TRUE")
+                        pm_conditions.append("e.six_month_pm = 1")
                     if annual_filter:
-                        pm_conditions.append("e.annual_pm = TRUE")
+                        pm_conditions.append("e.annual_pm = 1")
                     count_query += f" AND ({' OR '.join(pm_conditions)})"
                 if search_term:
                     count_query += ''' AND (
-                        LOWER(e.sap_material_no) LIKE LOWER(%s) OR
-                        LOWER(e.bfm_equipment_no) LIKE LOWER(%s) OR
-                        LOWER(e.description) LIKE LOWER(%s) OR
-                        LOWER(e.location) LIKE LOWER(%s) OR
-                        LOWER(e.master_lin) LIKE LOWER(%s)
+                        LOWER(e.sap_material_no) LIKE LOWER(?) OR
+                        LOWER(e.bfm_equipment_no) LIKE LOWER(?) OR
+                        LOWER(e.description) LIKE LOWER(?) OR
+                        LOWER(e.location) LIKE LOWER(?) OR
+                        LOWER(e.master_lin) LIKE LOWER(?)
                     )'''
                     search_param = f'%{search_term}%'
                     count_params.extend([search_param] * 5)
@@ -21325,7 +21309,7 @@ class AITCMMSSystem:
                     last_weekly_pm, last_monthly_pm, last_six_month_pm, last_annual_pm,
                     next_weekly_pm, next_monthly_pm, next_six_month_pm, next_annual_pm, status
                 FROM equipment
-                WHERE bfm_equipment_no = %s
+                WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
 
             equipment_data = cursor.fetchone()
@@ -21534,7 +21518,7 @@ class AITCMMSSystem:
                         INSERT INTO weekly_pm_schedules
                         (bfm_equipment_no, pm_type, week_start_date, scheduled_date,
                          assigned_technician, status, created_date)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (bfm_no, pm_type, week_start, scheduled_date, technician,
                           'Scheduled', datetime.now()))
 
@@ -21843,7 +21827,7 @@ class AITCMMSSystem:
                    ws.status, ws.assigned_technician
             FROM weekly_pm_schedules ws
             JOIN equipment e ON ws.bfm_equipment_no = e.bfm_equipment_no
-            WHERE ws.week_start_date = %s
+            WHERE ws.week_start_date = ?
             ORDER BY ws.assigned_technician, ws.scheduled_date
         ''', (week_start,))
 
@@ -21940,7 +21924,7 @@ class AITCMMSSystem:
                 today = datetime.now().strftime('%Y-%m-%d')
 
                 # Get equipment info
-                cursor.execute('SELECT description, location FROM equipment WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute('SELECT description, location FROM equipment WHERE bfm_equipment_no = ?', (bfm_no,))
                 equipment_info = cursor.fetchone()
                 if equipment_info:
                     eq_description, location = equipment_info
@@ -21949,7 +21933,7 @@ class AITCMMSSystem:
                     location = "Unknown"
 
                 # Check if already in cannot_find_assets
-                cursor.execute('SELECT bfm_equipment_no FROM cannot_find_assets WHERE bfm_equipment_no = %s', (bfm_no,))
+                cursor.execute('SELECT bfm_equipment_no FROM cannot_find_assets WHERE bfm_equipment_no = ?', (bfm_no,))
                 existing = cursor.fetchone()
 
                 if existing:
@@ -21957,22 +21941,22 @@ class AITCMMSSystem:
                     cursor.execute('''
                         UPDATE cannot_find_assets
                         SET status = 'Missing',
-                            technician_name = %s,
-                            reported_date = %s,
-                            notes = %s,
+                            technician_name = ?,
+                            reported_date = ?,
+                            notes = ?,
                             updated_date = CURRENT_TIMESTAMP
-                        WHERE bfm_equipment_no = %s
+                        WHERE bfm_equipment_no = ?
                     ''', (technician_name, today, notes, bfm_no))
                 else:
                     # Insert new record
                     cursor.execute('''
                         INSERT INTO cannot_find_assets
                         (bfm_equipment_no, description, location, technician_name, reported_date, status, notes)
-                        VALUES (%s, %s, %s, %s, %s, 'Missing', %s)
+                        VALUES (?, ?, ?, ?, ?, 'Missing', ?)
                     ''', (bfm_no, eq_description, location, technician_name, today, notes))
 
                 # Update equipment status
-                cursor.execute('UPDATE equipment SET status = %s WHERE bfm_equipment_no = %s',
+                cursor.execute('UPDATE equipment SET status = ? WHERE bfm_equipment_no = ?',
                              ('Cannot Find', bfm_no))
 
                 # Update PM schedule status to "Cannot Find"
@@ -21980,12 +21964,12 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE weekly_pm_schedules
                     SET status = 'Cannot Find',
-                        completion_date = %s,
-                        notes = %s
-                    WHERE bfm_equipment_no = %s
-                      AND assigned_technician = %s
-                      AND week_start_date = %s
-                      AND pm_type = %s
+                        completion_date = ?,
+                        notes = ?
+                    WHERE bfm_equipment_no = ?
+                      AND assigned_technician = ?
+                      AND week_start_date = ?
+                      AND pm_type = ?
                       AND status = 'Scheduled'
                 ''', (today, notes, bfm_no, technician_name, week_start, pm_type))
 
@@ -22038,7 +22022,7 @@ class AITCMMSSystem:
                         e.location, e.master_lin, ws.pm_type, ws.scheduled_date, ws.assigned_technician
                     FROM weekly_pm_schedules ws
                     JOIN equipment e ON ws.bfm_equipment_no = e.bfm_equipment_no
-                    WHERE ws.assigned_technician = %s AND ws.week_start_date = %s
+                    WHERE ws.assigned_technician = ? AND ws.week_start_date = ?
                     ORDER BY ws.scheduled_date
                 ''', (technician, week_start))
             
@@ -22175,7 +22159,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT checklist_items, estimated_hours, special_instructions, safety_notes
                     FROM pm_templates
-                    WHERE bfm_equipment_no = %s AND pm_type = %s
+                    WHERE bfm_equipment_no = ? AND pm_type = ?
                     ORDER BY updated_date DESC LIMIT 1
                 ''', (bfm_no, pm_type))
 
@@ -22220,7 +22204,7 @@ class AITCMMSSystem:
                 cursor.execute('''
                     SELECT picture_1_data, picture_2_data
                     FROM equipment
-                    WHERE bfm_equipment_no = %s
+                    WHERE bfm_equipment_no = ?
                 ''', (bfm_no,))
 
                 photo_result = cursor.fetchone()
@@ -22577,7 +22561,7 @@ class AITCMMSSystem:
                        ws.pm_type, ws.scheduled_date, ws.status
                 FROM weekly_pm_schedules ws
                 JOIN equipment e ON ws.bfm_equipment_no = e.bfm_equipment_no
-                WHERE ws.week_start_date = %s
+                WHERE ws.week_start_date = ?
                 ORDER BY ws.assigned_technician, ws.scheduled_date
             ''', (week_start,))
             
@@ -23138,8 +23122,8 @@ class AITCMMSSystem:
                 # Check if this exact PM already exists in latest
                 latest_cursor.execute('''
                     SELECT id FROM pm_completions 
-                    WHERE bfm_equipment_no = %s AND pm_type = %s
-                    AND technician_name = %s AND completion_date = %s
+                    WHERE bfm_equipment_no = ? AND pm_type = ?
+                    AND technician_name = ? AND completion_date = ?
                 ''', (bfm_no, pm_type, tech, comp_date))
             
                 if not latest_cursor.fetchone():
@@ -23149,7 +23133,7 @@ class AITCMMSSystem:
                         (bfm_equipment_no, pm_type, technician_name, completion_date,
                         labor_hours, labor_minutes, pm_due_date, special_equipment, notes,
                         next_annual_pm_date)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (bfm_no, pm_type, tech, comp_date, hours, mins, due_date, special, notes, next_annual))
                     merged_count += 1
         
@@ -23181,7 +23165,7 @@ class AITCMMSSystem:
             
                 # Check if CM exists in latest
                 latest_cursor.execute(
-                    'SELECT id FROM corrective_maintenance WHERE cm_number = %s',
+                    'SELECT id FROM corrective_maintenance WHERE cm_number = ?',
                     (cm_number,)
                 )
             
@@ -23189,7 +23173,7 @@ class AITCMMSSystem:
             
                 if not exists:
                     # Insert new CM
-                    placeholders = ', '.join(['%s' for _ in columns])
+                    placeholders = ', '.join(['?' for _ in columns])
                     latest_cursor.execute(
                         f'INSERT INTO corrective_maintenance VALUES ({placeholders})',
                         cm
@@ -23197,9 +23181,9 @@ class AITCMMSSystem:
                     merged_count += 1
                 else:
                     # Update existing CM (user's version is newer)
-                    set_clause = ', '.join([f'{col} = %s' for col in columns[2:]])  # Skip id and cm_number
+                    set_clause = ', '.join([f'{col} = ?' for col in columns[2:]])  # Skip id and cm_number
                     latest_cursor.execute(
-                        f'UPDATE corrective_maintenance SET {set_clause} WHERE cm_number = %s',
+                        f'UPDATE corrective_maintenance SET {set_clause} WHERE cm_number = ?',
                         cm[2:] + (cm_number,)
                     )
                     merged_count += 1
@@ -23234,7 +23218,7 @@ class AITCMMSSystem:
             
                 # Check if exists in latest
                 latest_cursor.execute(
-                    'SELECT id FROM mro_inventory WHERE part_number = %s',
+                    'SELECT id FROM mro_inventory WHERE part_number = ?',
                     (part_number,)
                 )
             
@@ -23242,7 +23226,7 @@ class AITCMMSSystem:
             
                 if not exists:
                     # Insert new item
-                    placeholders = ', '.join(['%s' for _ in columns])
+                    placeholders = ', '.join(['?' for _ in columns])
                     latest_cursor.execute(
                         f'INSERT INTO mro_inventory VALUES ({placeholders})',
                         item
@@ -23250,9 +23234,9 @@ class AITCMMSSystem:
                     merged_count += 1
                 else:
                     # Update existing (user's changes win for MRO)
-                    set_clause = ', '.join([f'{col} = %s' for col in columns[2:]])
+                    set_clause = ', '.join([f'{col} = ?' for col in columns[2:]])
                     latest_cursor.execute(
-                        f'UPDATE mro_inventory SET {set_clause} WHERE part_number = %s',
+                        f'UPDATE mro_inventory SET {set_clause} WHERE part_number = ?',
                         item[2:] + (part_number,)
                     )
                     merged_count += 1
@@ -23286,7 +23270,7 @@ class AITCMMSSystem:
             
                 # Check if exists in latest
                 latest_cursor.execute(
-                    'SELECT id FROM equipment WHERE bfm_equipment_no = %s',
+                    'SELECT id FROM equipment WHERE bfm_equipment_no = ?',
                     (bfm_no,)
                 )
             
@@ -23294,7 +23278,7 @@ class AITCMMSSystem:
             
                 if not exists:
                     # Insert new equipment
-                    placeholders = ', '.join(['%s' for _ in columns])
+                    placeholders = ', '.join(['?' for _ in columns])
                     latest_cursor.execute(
                         f'INSERT INTO equipment VALUES ({placeholders})',
                         equip
@@ -23329,12 +23313,12 @@ class AITCMMSSystem:
                 bfm_no = asset[1]  # Assuming bfm_equipment_no is second column
             
                 latest_cursor.execute(
-                    'SELECT id FROM cannot_find_assets WHERE bfm_equipment_no = %s',
+                    'SELECT id FROM cannot_find_assets WHERE bfm_equipment_no = ?',
                     (bfm_no,)
                 )
             
                 if not latest_cursor.fetchone():
-                    placeholders = ', '.join(['%s' for _ in columns])
+                    placeholders = ', '.join(['?' for _ in columns])
                     latest_cursor.execute(
                         f'INSERT INTO cannot_find_assets VALUES ({placeholders})',
                         asset
@@ -23368,12 +23352,12 @@ class AITCMMSSystem:
                 bfm_no = asset[1]  # Assuming bfm_equipment_no is second column
             
                 latest_cursor.execute(
-                    'SELECT id FROM run_to_failure_assets WHERE bfm_equipment_no = %s',
+                    'SELECT id FROM run_to_failure_assets WHERE bfm_equipment_no = ?',
                     (bfm_no,)
                 )
             
                 if not latest_cursor.fetchone():
-                    placeholders = ', '.join(['%s' for _ in columns])
+                    placeholders = ', '.join(['?' for _ in columns])
                     latest_cursor.execute(
                         f'INSERT INTO run_to_failure_assets VALUES ({placeholders})',
                         asset

@@ -81,8 +81,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COUNT(DISTINCT bfm_equipment_no || pm_type)
             FROM weekly_pm_schedules
-            WHERE week_start_date >= %s
-            AND week_start_date <= %s
+            WHERE week_start_date >= ?
+            AND week_start_date <= ?
         ''', (start_date, end_date))
         scheduled_pms = cursor.fetchone()[0] or 0
 
@@ -90,8 +90,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COUNT(*)
             FROM pm_completions
-            WHERE completion_date >= %s
-            AND completion_date <= %s
+            WHERE completion_date >= ?
+            AND completion_date <= ?
         ''', (start_date, end_date))
         completed_pms = cursor.fetchone()[0] or 0
 
@@ -129,8 +129,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE reported_date >= %s
-            AND reported_date <= %s
+            WHERE reported_date >= ?
+            AND reported_date <= ?
         ''', (start_date, end_date))
 
         wo_opened = cursor.fetchone()[0] or 0
@@ -161,8 +161,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE closed_date >= %s
-            AND closed_date <= %s
+            WHERE closed_date >= ?
+            AND closed_date <= ?
         ''', (start_date, end_date))
 
         wo_closed = cursor.fetchone()[0] or 0
@@ -192,23 +192,27 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE reported_date <= %s
-            AND (closed_date IS NULL OR closed_date > %s)
+            WHERE reported_date <= ?
+            AND (closed_date IS NULL OR closed_date > ?)
         ''', (end_date, end_date))
 
         backlog = cursor.fetchone()[0] or 0
 
-        # Also get age profile
+        # Also get age profile using Python-computed cutoff dates
+        cutoff_7  = (datetime.strptime(end_date, '%Y-%m-%d') - timedelta(days=7)).strftime('%Y-%m-%d')
+        cutoff_30 = (datetime.strptime(end_date, '%Y-%m-%d') - timedelta(days=30)).strftime('%Y-%m-%d')
+        cutoff_60 = (datetime.strptime(end_date, '%Y-%m-%d') - timedelta(days=60)).strftime('%Y-%m-%d')
+
         cursor.execute('''
             SELECT
-                COUNT(CASE WHEN %s::date - reported_date::date <= 7 THEN 1 END) as week_0_7,
-                COUNT(CASE WHEN %s::date - reported_date::date BETWEEN 8 AND 30 THEN 1 END) as week_8_30,
-                COUNT(CASE WHEN %s::date - reported_date::date BETWEEN 31 AND 60 THEN 1 END) as days_31_60,
-                COUNT(CASE WHEN %s::date - reported_date::date > 60 THEN 1 END) as days_over_60
+                COUNT(CASE WHEN reported_date >= ? THEN 1 END) as week_0_7,
+                COUNT(CASE WHEN reported_date >= ? AND reported_date < ? THEN 1 END) as week_8_30,
+                COUNT(CASE WHEN reported_date >= ? AND reported_date < ? THEN 1 END) as days_31_60,
+                COUNT(CASE WHEN reported_date < ? THEN 1 END) as days_over_60
             FROM corrective_maintenance
-            WHERE reported_date <= %s
-            AND (closed_date IS NULL OR closed_date > %s)
-        ''', (end_date, end_date, end_date, end_date, end_date, end_date))
+            WHERE reported_date <= ?
+            AND (closed_date IS NULL OR closed_date > ?)
+        ''', (cutoff_7, cutoff_30, cutoff_7, cutoff_60, cutoff_30, cutoff_60, end_date, end_date))
 
         age_profile = cursor.fetchone()
 
@@ -242,19 +246,19 @@ class KPIAutoCollector:
         """
         cursor = self.conn.cursor()
 
-        # Calculate total downtime from CM records
+        # Calculate total downtime from CM records using SQLite date functions
         cursor.execute('''
             SELECT COALESCE(SUM(
                 CASE
                     WHEN closed_date IS NOT NULL THEN
-                        closed_date::date - reported_date::date
+                        CAST((julianday(closed_date) - julianday(reported_date)) AS INTEGER)
                     ELSE
-                        %s::date - reported_date::date
+                        CAST((julianday(?) - julianday(reported_date)) AS INTEGER)
                 END
             ), 0)
             FROM corrective_maintenance
-            WHERE reported_date >= %s
-            AND reported_date <= %s
+            WHERE reported_date >= ?
+            AND reported_date <= ?
         ''', (end_date, start_date, end_date))
 
         total_downtime_days = cursor.fetchone()[0] or 0
@@ -313,8 +317,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COUNT(*)
             FROM corrective_maintenance
-            WHERE reported_date >= %s
-            AND reported_date <= %s
+            WHERE reported_date >= ?
+            AND reported_date <= ?
         ''', (start_date, end_date))
 
         failure_count = cursor.fetchone()[0] or 0
@@ -356,17 +360,17 @@ class KPIAutoCollector:
         """
         cursor = self.conn.cursor()
 
-        # Get repair times for closed CMs
+        # Get repair times for closed CMs using SQLite julianday arithmetic
         cursor.execute('''
             SELECT
                 COUNT(*) as repair_count,
                 COALESCE(AVG(
-                    EXTRACT(EPOCH FROM (closed_date::timestamp - reported_date::timestamp)) / 3600
+                    (julianday(closed_date) - julianday(reported_date)) * 24
                 ), 0) as avg_repair_hours
             FROM corrective_maintenance
             WHERE closed_date IS NOT NULL
-            AND closed_date >= %s
-            AND closed_date <= %s
+            AND closed_date >= ?
+            AND closed_date <= ?
         ''', (start_date, end_date))
 
         row = cursor.fetchone()
@@ -401,8 +405,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COALESCE(SUM(labor_hours), 0)
             FROM pm_completions
-            WHERE completion_date >= %s
-            AND completion_date <= %s
+            WHERE completion_date >= ?
+            AND completion_date <= ?
         ''', (start_date, end_date))
         pm_hours = float(cursor.fetchone()[0] or 0)
 
@@ -410,8 +414,8 @@ class KPIAutoCollector:
         cursor.execute('''
             SELECT COALESCE(SUM(labor_hours), 0)
             FROM corrective_maintenance
-            WHERE reported_date >= %s
-            AND reported_date <= %s
+            WHERE reported_date >= ?
+            AND reported_date <= ?
         ''', (start_date, end_date))
         cm_hours = float(cursor.fetchone()[0] or 0)
 
@@ -453,15 +457,9 @@ class KPIAutoCollector:
                 try:
                     # Save main value
                     cursor.execute('''
-                        INSERT INTO kpi_manual_data
+                        INSERT OR REPLACE INTO kpi_manual_data
                         (kpi_name, measurement_period, data_field, data_value, notes, entered_by)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (kpi_name, measurement_period, data_field)
-                        DO UPDATE SET
-                            data_value = EXCLUDED.data_value,
-                            notes = EXCLUDED.notes,
-                            entered_by = EXCLUDED.entered_by,
-                            entered_date = CURRENT_TIMESTAMP
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ''', (
                         kpi_data['kpi_name'],
                         period,

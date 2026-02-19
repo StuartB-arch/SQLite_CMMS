@@ -316,7 +316,7 @@ class CMPartsIntegration:
                 for part in consumed_parts:
                     # Get unit price for cost calculation
                     cursor.execute('''
-                        SELECT unit_price FROM mro_inventory WHERE part_number = %s
+                        SELECT unit_price FROM mro_inventory WHERE part_number = ?
                     ''', (str(part['part_number']),))
                     result = cursor.fetchone()
                     unit_price = float(result[0]) if result and result[0] else 0.0
@@ -326,7 +326,7 @@ class CMPartsIntegration:
                     cursor.execute('''
                         INSERT INTO mro_stock_transactions
                         (part_number, transaction_type, quantity, technician_name, notes, transaction_date)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?)
                     ''', (
                         str(part['part_number']),
                         'Issue',
@@ -340,7 +340,7 @@ class CMPartsIntegration:
                     cursor.execute('''
                         INSERT INTO cm_parts_used
                         (cm_number, part_number, quantity_used, total_cost, recorded_date, recorded_by, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         cm_number,
                         str(part['part_number']),
@@ -354,9 +354,9 @@ class CMPartsIntegration:
                     # Update inventory quantity
                     cursor.execute('''
                         UPDATE mro_inventory
-                        SET quantity_in_stock = quantity_in_stock - %s,
-                            last_updated = %s
-                        WHERE part_number = %s
+                        SET quantity_in_stock = quantity_in_stock - ?,
+                            last_updated = ?
+                        WHERE part_number = ?
                     ''', (part['quantity'], datetime.now(), str(part['part_number'])))
 
                 self.conn.commit()
@@ -446,7 +446,7 @@ class CMPartsIntegration:
                     cp.notes
                 FROM cm_parts_used cp
                 LEFT JOIN mro_inventory mi ON cp.part_number = mi.part_number
-                WHERE cp.cm_number = %s
+                WHERE cp.cm_number = ?
                 ORDER BY cp.recorded_date DESC
             ''', (cm_number,))
 

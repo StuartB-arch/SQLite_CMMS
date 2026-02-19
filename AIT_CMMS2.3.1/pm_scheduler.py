@@ -115,13 +115,14 @@ class CompletionRecordRepository:
 
         # Fallback to individual query if cache not loaded
         cursor = self.conn.cursor()
+        cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, completion_date, technician_name
             FROM pm_completions
-            WHERE bfm_equipment_no = %s
-            AND completion_date::DATE >= CURRENT_DATE - INTERVAL '%s days'
+            WHERE bfm_equipment_no = ?
+            AND completion_date >= ?
             ORDER BY completion_date DESC
-        ''', (bfm_no, days))
+        ''', (bfm_no, cutoff))
 
         completions = []
         for row in cursor.fetchall():
@@ -152,12 +153,13 @@ class CompletionRecordRepository:
         """Load ALL completion records for ALL equipment in one query - MASSIVE PERFORMANCE BOOST"""
         print(f"DEBUG: Bulk loading completion records...")
         cursor = self.conn.cursor()
+        cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, completion_date, technician_name
             FROM pm_completions
-            WHERE completion_date::DATE >= CURRENT_DATE - INTERVAL '%s days'
+            WHERE completion_date >= ?
             ORDER BY bfm_equipment_no, completion_date DESC
-        ''', (days,))
+        ''', (cutoff,))
 
         # Group completions by equipment
         self._completion_cache = {}
@@ -202,13 +204,13 @@ class CompletionRecordRepository:
             cursor.execute('''
                 SELECT bfm_equipment_no, pm_type, assigned_technician, status
                 FROM weekly_pm_schedules
-                WHERE week_start_date = %s AND bfm_equipment_no = %s
+                WHERE week_start_date = ? AND bfm_equipment_no = ?
             ''', (week_start.strftime('%Y-%m-%d'), bfm_no))
         else:
             cursor.execute('''
                 SELECT bfm_equipment_no, pm_type, assigned_technician, status
                 FROM weekly_pm_schedules
-                WHERE week_start_date = %s
+                WHERE week_start_date = ?
             ''', (week_start.strftime('%Y-%m-%d'),))
 
         return [{'bfm_no': row[0], 'pm_type': row[1], 'technician': row[2], 'status': row[3]}
@@ -221,7 +223,7 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, assigned_technician, status
             FROM weekly_pm_schedules
-            WHERE week_start_date = %s
+            WHERE week_start_date = ?
         ''', (week_start.strftime('%Y-%m-%d'),))
 
         # Group scheduled PMs by equipment
@@ -247,7 +249,7 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT bfm_equipment_no, pm_type, week_start_date, assigned_technician, status, scheduled_date
             FROM weekly_pm_schedules
-            WHERE week_start_date < %s
+            WHERE week_start_date < ?
             AND status = 'Scheduled'
             ORDER BY bfm_equipment_no, pm_type, week_start_date DESC
         ''', (before_week.strftime('%Y-%m-%d'),))
@@ -285,9 +287,9 @@ class CompletionRecordRepository:
         cursor.execute('''
             SELECT week_start_date, assigned_technician, status, scheduled_date
             FROM weekly_pm_schedules
-            WHERE bfm_equipment_no = %s
-            AND pm_type = %s
-            AND week_start_date < %s
+            WHERE bfm_equipment_no = ?
+            AND pm_type = ?
+            AND week_start_date < ?
             AND status = 'Scheduled'
             ORDER BY week_start_date DESC
             LIMIT 5
@@ -343,7 +345,7 @@ class PMEligibilityChecker:
                 next_annual_str = self._next_annual_cache.get(equipment.bfm_no)
             else:
                 cursor = self.completion_repo.conn.cursor()
-                cursor.execute('SELECT next_annual_pm FROM equipment WHERE bfm_equipment_no = %s', (equipment.bfm_no,))
+                cursor.execute('SELECT next_annual_pm FROM equipment WHERE bfm_equipment_no = ?', (equipment.bfm_no,))
                 result = cursor.fetchone()
                 next_annual_str = result[0] if result and result[0] else None
 
@@ -886,7 +888,7 @@ class PMSchedulingService:
             AND bfm_equipment_no NOT IN (
                 SELECT DISTINCT bfm_equipment_no FROM deactivated_assets
             )
-            AND (weekly_pm = TRUE OR monthly_pm = TRUE OR six_month_pm = TRUE OR annual_pm = TRUE)
+            AND (weekly_pm = 1 OR monthly_pm = 1 OR six_month_pm = 1 OR annual_pm = 1)
             ORDER BY bfm_equipment_no
         ''')
 
