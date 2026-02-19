@@ -9887,8 +9887,8 @@ class AITCMMSSystem:
             cursor = self.conn.cursor()
 
             print("=" * 60)
-            print("CHECK: Connected to Neon PostgreSQL successfully!")
-            print("CHECK: Connection pool initialized for multi-user support")
+            print("CHECK: Connected to SQLite database successfully!")
+            print("CHECK: Connection pool initialized")
             print("=" * 60)
 
             # PERFORMANCE FIX: Check if database is already initialized
