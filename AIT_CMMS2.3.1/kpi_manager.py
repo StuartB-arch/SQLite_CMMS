@@ -38,7 +38,7 @@ class KPIManager:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM kpi_definitions
-                WHERE kpi_name = ? AND is_active = TRUE
+                WHERE kpi_name = ? AND is_active = 1
             """, (kpi_name,))
             result = cursor.fetchone()
             cursor.close()
