@@ -12150,8 +12150,7 @@ class AITCMMSSystem:
                             pm_due_date = ?,
                             special_equipment = ?,
                             notes = ?,
-                            next_annual_pm_date = ?,
-                            updated_date = CURRENT_TIMESTAMP
+                            next_annual_pm_date = ?
                         WHERE id = ?
                     ''', (new_pm_type, new_technician, new_completion_date,
                          new_labor_hours, new_labor_minutes, new_pm_due_date,
@@ -12693,7 +12692,7 @@ class AITCMMSSystem:
             cursor.execute("""
                 UPDATE cannot_find_assets
                 SET description = ?, location = ?, technician_name = ?,
-                    reported_date = ?, status = ?, updated_date = CURRENT_TIMESTAMP
+                    reported_date = ?, status = ?
                 WHERE bfm_equipment_no = ?
             """, (asset_data[1], asset_data[2], asset_data[3],
                 asset_data[4], asset_data[5], asset_data[0]))
@@ -14440,37 +14439,33 @@ class AITCMMSSystem:
             if pm_type == 'Monthly':
                 if next_annual_pm: 
                     cursor.execute('''
-                        UPDATE equipment SET 
-                        last_monthly_pm = ?, 
+                        UPDATE equipment SET
+                        last_monthly_pm = ?,
                         next_monthly_pm = date(?, '+30 day'),
-                        next_annual_pm = ?,  
-                        updated_date = CURRENT_TIMESTAMP
+                        next_annual_pm = ?
                         WHERE bfm_equipment_no = ?
                     ''', (completion_date, completion_date, next_annual_pm, bfm_no))
                 else:
                     cursor.execute('''
-                        UPDATE equipment SET 
-                        last_monthly_pm = ?, 
-                        next_monthly_pm = date(?, '+30 day'),
-                        updated_date = CURRENT_TIMESTAMP
+                        UPDATE equipment SET
+                        last_monthly_pm = ?,
+                        next_monthly_pm = date(?, '+30 day')
                         WHERE bfm_equipment_no = ?
                     ''', (completion_date, completion_date, bfm_no))
                     
             elif pm_type == 'Six Month':
                 cursor.execute('''
-                    UPDATE equipment SET 
-                    last_six_month_pm = ?, 
-                    next_six_month_pm = date(?, '+180 day'),
-                    updated_date = CURRENT_TIMESTAMP
+                    UPDATE equipment SET
+                    last_six_month_pm = ?,
+                    next_six_month_pm = date(?, '+180 day')
                     WHERE bfm_equipment_no = ?
                 ''', (completion_date, completion_date, bfm_no))
                 
             elif pm_type == 'Annual':
                 cursor.execute('''
-                    UPDATE equipment SET 
-                    last_annual_pm = ?, 
-                    next_annual_pm = date(?, '+365 day'),
-                    updated_date = CURRENT_TIMESTAMP
+                    UPDATE equipment SET
+                    last_annual_pm = ?,
+                    next_annual_pm = date(?, '+365 day')
                     WHERE bfm_equipment_no = ?
                 ''', (completion_date, completion_date, bfm_no))
 
@@ -14735,12 +14730,11 @@ class AITCMMSSystem:
 
             # Update equipment status and disable all PM types
             cursor.execute('''
-                UPDATE equipment SET 
+                UPDATE equipment SET
                 status = "Run to Failure",
                 monthly_pm = 0,
                 six_month_pm = 0,
-                annual_pm = 0,
-                updated_date = CURRENT_TIMESTAMP
+                annual_pm = 0
                 WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
         
@@ -15579,8 +15573,7 @@ class AITCMMSSystem:
                     UPDATE cannot_find_assets
                     SET status = 'Found',
                         found_date = CURRENT_DATE,
-                        found_by = ?,
-                        updated_date = CURRENT_TIMESTAMP
+                        found_by = ?
                     WHERE bfm_equipment_no = ?
                 ''', (found_by, bfm_no))
 
@@ -21950,8 +21943,7 @@ class AITCMMSSystem:
                         SET status = 'Missing',
                             technician_name = ?,
                             reported_date = ?,
-                            notes = ?,
-                            updated_date = CURRENT_TIMESTAMP
+                            notes = ?
                         WHERE bfm_equipment_no = ?
                     ''', (technician_name, today, notes, bfm_no))
                 else:
