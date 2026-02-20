@@ -166,6 +166,21 @@ def migrate_existing_db(conn):
     except Exception:
         pass
 
+    # ---- pm_templates: add columns expected by the application ------------
+    for col_def in [
+        "ALTER TABLE pm_templates ADD COLUMN template_name        TEXT",
+        "ALTER TABLE pm_templates ADD COLUMN checklist_items      TEXT",
+        "ALTER TABLE pm_templates ADD COLUMN special_instructions TEXT",
+        "ALTER TABLE pm_templates ADD COLUMN safety_notes         TEXT",
+        "ALTER TABLE pm_templates ADD COLUMN estimated_hours      REAL DEFAULT 1.0",
+        "ALTER TABLE pm_templates ADD COLUMN template_content     TEXT",
+        "ALTER TABLE pm_templates ADD COLUMN created_by           TEXT",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass  # column already exists
+
     conn.commit()
 
 
@@ -517,13 +532,18 @@ def create_core_tables(conn):
     # ------------------------------------------------------------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS pm_templates (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            bfm_equipment_no TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
-            pm_type          TEXT    NOT NULL,
-            template_content TEXT,
-            created_by       TEXT,
-            created_date     TEXT    DEFAULT CURRENT_TIMESTAMP,
-            updated_date     TEXT
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            bfm_equipment_no     TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
+            template_name        TEXT,
+            pm_type              TEXT    NOT NULL,
+            checklist_items      TEXT,
+            special_instructions TEXT,
+            safety_notes         TEXT,
+            estimated_hours      REAL    DEFAULT 1.0,
+            template_content     TEXT,
+            created_by           TEXT,
+            created_date         TEXT    DEFAULT CURRENT_TIMESTAMP,
+            updated_date         TEXT    DEFAULT CURRENT_TIMESTAMP
         )
     """)
 

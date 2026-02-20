@@ -22252,7 +22252,7 @@ class AITCMMSSystem:
             # =================== FETCH EQUIPMENT PHOTOS ===================
                 # Retrieve equipment photos from database
                 cursor.execute('''
-                    SELECT picture_1_data, picture_2_data
+                    SELECT picture_1, picture_2
                     FROM equipment
                     WHERE bfm_equipment_no = ?
                 ''', (bfm_no,))
