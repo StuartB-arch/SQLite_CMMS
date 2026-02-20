@@ -22148,6 +22148,56 @@ class AITCMMSSystem:
                     story.append(Paragraph("AIT - BUILDING THE FUTURE OF AEROSPACE", company_style))
                     story.append(Spacer(1, 15))
 
+            # =================== PROMINENT TECHNICIAN / PM HEADER ===================
+                form_title_style = ParagraphStyle(
+                    'FormTitle',
+                    parent=styles['Normal'],
+                    fontSize=15,
+                    fontName='Helvetica-Bold',
+                    alignment=1,
+                    textColor=colors.darkblue,
+                    spaceAfter=4
+                )
+                tech_header_style = ParagraphStyle(
+                    'TechHeader',
+                    parent=styles['Normal'],
+                    fontSize=13,
+                    fontName='Helvetica-Bold',
+                    alignment=1,
+                    textColor=colors.black,
+                    spaceAfter=2
+                )
+                desc_header_style = ParagraphStyle(
+                    'DescHeader',
+                    parent=styles['Normal'],
+                    fontSize=11,
+                    fontName='Helvetica-Bold',
+                    alignment=1,
+                    textColor=colors.HexColor('#333333'),
+                    spaceAfter=2
+                )
+                week_info_style = ParagraphStyle(
+                    'WeekInfo',
+                    parent=styles['Normal'],
+                    fontSize=9,
+                    fontName='Helvetica',
+                    alignment=1,
+                    textColor=colors.darkgrey,
+                    spaceAfter=6
+                )
+
+                story.append(Paragraph("PREVENTIVE MAINTENANCE WORK ORDER", form_title_style))
+                story.append(Paragraph(f"Technician: {assigned_tech}", tech_header_style))
+                story.append(Paragraph(
+                    f"SAP/BFM Description: {description}  |  BFM #: {bfm_no}  |  SAP #: {sap_no}",
+                    desc_header_style
+                ))
+                story.append(Paragraph(
+                    f"PM Type: {pm_type}   |   Scheduled Date: {scheduled_date}",
+                    week_info_style
+                ))
+                story.append(Spacer(1, 8))
+
             # =================== FETCH CUSTOM PM TEMPLATE ===================
             # Retrieve custom template data BEFORE building the equipment table
                 checklist_items = []
@@ -22218,29 +22268,38 @@ class AITCMMSSystem:
                         print(f"DEBUG: Equipment {bfm_no} has photos - Pic1: {'Yes' if picture_1_data else 'No'}, Pic2: {'Yes' if picture_2_data else 'No'}")
 
             # =================== EQUIPMENT INFORMATION TABLE ===================
+                bold_value_style = ParagraphStyle(
+                    'BoldValue',
+                    parent=styles['Normal'],
+                    fontSize=9,
+                    fontName='Helvetica-Bold',
+                    leading=11,
+                    wordWrap='LTR'
+                )
+
                 equipment_data = [
                     [
-                        Paragraph('(SAP) Material Number:', header_cell_style), 
-                        Paragraph(str(sap_no), cell_style), 
-                        Paragraph('Tool ID / Drawing Number:', header_cell_style), 
+                        Paragraph('(SAP) Material Number:', header_cell_style),
+                        Paragraph(str(sap_no), bold_value_style),
+                        Paragraph('Tool ID / Drawing Number:', header_cell_style),
                         Paragraph(str(tool_id), cell_style)
                     ],
                     [
-                        Paragraph('(BFM) Equipment Number:', header_cell_style), 
-                        Paragraph(str(bfm_no), cell_style), 
-                        Paragraph('Description of Equipment:', header_cell_style), 
-                        Paragraph(str(description), cell_style)
+                        Paragraph('(BFM) Equipment Number:', header_cell_style),
+                        Paragraph(str(bfm_no), bold_value_style),
+                        Paragraph('Description of Equipment:', header_cell_style),
+                        Paragraph(str(description), bold_value_style)
                     ],
                     [
-                        Paragraph('Date of Last PM:', header_cell_style), 
-                        Paragraph('', cell_style), 
-                        Paragraph('Location of Equipment:', header_cell_style), 
+                        Paragraph('Date of Last PM:', header_cell_style),
+                        Paragraph('', cell_style),
+                        Paragraph('Location of Equipment:', header_cell_style),
                         Paragraph(str(location), cell_style)
                     ],
                     [
-                        Paragraph('Maintenance Technician:', header_cell_style), 
-                        Paragraph(str(assigned_tech), cell_style), 
-                        Paragraph('PM Cycle:', header_cell_style), 
+                        Paragraph('Maintenance Technician:', header_cell_style),
+                        Paragraph(str(assigned_tech), bold_value_style),
+                        Paragraph('PM Cycle:', header_cell_style),
                         Paragraph(str(pm_type), cell_style)
                     ],
                     [
