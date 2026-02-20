@@ -55,6 +55,17 @@ class _Row(dict):
     def __len__(self):
         return len(object.__getattribute__(self, "_keys"))
 
+    def __iter__(self):
+        """Yield values in column order — makes tuple-unpacking work like sqlite3.Row."""
+        keys = object.__getattribute__(self, "_keys")
+        for k in keys:
+            yield dict.__getitem__(self, k)
+
+    def values(self):
+        """Return values in column order."""
+        keys = object.__getattribute__(self, "_keys")
+        return [dict.__getitem__(self, k) for k in keys]
+
     def get(self, key, default=None):
         if isinstance(key, int):
             keys = object.__getattribute__(self, "_keys")
