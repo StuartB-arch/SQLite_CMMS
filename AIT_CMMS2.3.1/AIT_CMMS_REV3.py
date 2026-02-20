@@ -4520,7 +4520,7 @@ class AITCMMSSystem:
         cursor = self.conn.cursor()
         today = datetime.now().strftime('%Y%m%d')
         cursor.execute(
-            "SELECT MAX(CAST(SPLIT_PART(cm_number, '-', 3) AS INTEGER)) "
+            "SELECT MAX(CAST(SUBSTR(cm_number, 13) AS INTEGER)) "
             "FROM corrective_maintenance "
             "WHERE cm_number LIKE ?",
             (f'CM-{today}-%',)
@@ -16112,8 +16112,9 @@ class AITCMMSSystem:
         # Generate next CM number in format CM-YYYYMMDD-XXXX
         cursor = self.conn.cursor()
         today = datetime.now().strftime('%Y%m%d')
+        # SQLite compatible: prefix "CM-YYYYMMDD-" is always 12 chars, sequence starts at position 13
         cursor.execute(
-            "SELECT MAX(CAST(SPLIT_PART(cm_number, '-', 3) AS INTEGER)) "
+            "SELECT MAX(CAST(SUBSTR(cm_number, 13) AS INTEGER)) "
             "FROM corrective_maintenance "
             "WHERE cm_number LIKE ?",
             (f'CM-{today}-%',)
@@ -16331,8 +16332,9 @@ class AITCMMSSystem:
             today = datetime.now().strftime('%Y%m%d')
 
             # Get the maximum sequence number for today
+            # SQLite compatible: prefix "EMP-YYYYMMDD-" is 13 chars, sequence starts at position 14
             cursor.execute(
-                "SELECT MAX(CAST(SPLIT_PART(emp_number, '-', 3) AS INTEGER)) "
+                "SELECT MAX(CAST(SUBSTR(emp_number, 14) AS INTEGER)) "
                 "FROM equipment_missing_parts "
                 "WHERE emp_number LIKE ?",
                 (f'EMP-{today}-%',)
