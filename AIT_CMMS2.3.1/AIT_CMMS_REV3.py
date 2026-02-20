@@ -15563,8 +15563,7 @@ class AITCMMSSystem:
                     status = 'Active',
                     monthly_pm = ?,
                     six_month_pm = ?,
-                    annual_pm = ?,
-                    updated_date = CURRENT_TIMESTAMP
+                    annual_pm = ?
                     WHERE bfm_equipment_no = ?
                 ''', (
                     True if monthly_var.get() else False,
@@ -15756,8 +15755,7 @@ class AITCMMSSystem:
                     status = 'Active',
                     monthly_pm = ?,
                     six_month_pm = ?,
-                    annual_pm = ?,
-                    updated_date = CURRENT_TIMESTAMP
+                    annual_pm = ?
                     WHERE bfm_equipment_no = ?
                 ''', (
                     True if monthly_var.get() else False,
