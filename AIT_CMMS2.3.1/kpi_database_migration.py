@@ -163,12 +163,13 @@ def insert_kpi_definitions(cursor):
 
 def migrate_kpi_database():
     """Main migration function"""
+    conn = None
     try:
         # Get database connection
         pool = DatabaseConnectionPool()
 
         # Check if pool is initialized, if not, we need connection info
-        if pool.pool is None:
+        if not pool._initialized:
             print("Error: Database connection pool not initialized.")
             print("Please run this migration from within the main application or initialize the pool first.")
             return False
