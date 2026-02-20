@@ -4165,7 +4165,11 @@ class AITCMMSSystem:
         # Form fields
         ttk.Label(dialog, text="BFM Equipment No:").grid(row=0, column=0, sticky='w', padx=10, pady=10)
         bfm_var = tk.StringVar()
-        bfm_entry = ttk.Entry(dialog, textvariable=bfm_var, width=30)
+        _bfm_cursor = self.conn.cursor()
+        _bfm_cursor.execute("SELECT DISTINCT bfm_equipment_no FROM equipment ORDER BY bfm_equipment_no")
+        _all_equipment = [r[0] for r in _bfm_cursor.fetchall()]
+        bfm_entry = ttk.Combobox(dialog, textvariable=bfm_var, values=_all_equipment,
+                                 width=28, state='readonly')
         bfm_entry.grid(row=0, column=1, padx=10, pady=10)
 
         ttk.Label(dialog, text="Description:").grid(row=1, column=0, sticky='w', padx=10, pady=10)
@@ -16196,10 +16200,11 @@ class AITCMMSSystem:
         ttk.Label(dialog, text="Equipment (BFM):").grid(row=row, column=0, sticky='w', padx=10, pady=5)
         bfm_var = tk.StringVar()
         
-        cursor.execute("SELECT DISTINCT bfm_equipment_no FROM equipment WHERE status = 'Active' ORDER BY bfm_equipment_no")
+        cursor.execute("SELECT DISTINCT bfm_equipment_no FROM equipment ORDER BY bfm_equipment_no")
         equipment_list = [row[0] for row in cursor.fetchall()]
-        
-        bfm_combo = ttk.Combobox(dialog, textvariable=bfm_var, values=equipment_list, width=20)
+
+        bfm_combo = ttk.Combobox(dialog, textvariable=bfm_var, values=equipment_list,
+                                 width=20, state='readonly')
         bfm_combo.grid(row=row, column=1, sticky='w', padx=10, pady=5)
         row += 1
 
@@ -16420,7 +16425,8 @@ class AITCMMSSystem:
         equipment_list = [row_data[0] for row_data in cursor.fetchall()]
         cursor.close()
 
-        bfm_combo = ttk.Combobox(dialog, textvariable=bfm_var, values=equipment_list, width=20)
+        bfm_combo = ttk.Combobox(dialog, textvariable=bfm_var, values=equipment_list,
+                                 width=20, state='readonly')
         bfm_combo.grid(row=row, column=1, sticky='w', padx=10, pady=5)
         row += 1
 
@@ -16689,7 +16695,8 @@ class AITCMMSSystem:
         bfm_var = tk.StringVar(value=orig_bfm_no or '')
         cursor.execute('SELECT DISTINCT bfm_equipment_no FROM equipment ORDER BY bfm_equipment_no')
         equipment_list = [row_data[0] for row_data in cursor.fetchall()]
-        bfm_combo = ttk.Combobox(header_frame, textvariable=bfm_var, values=equipment_list, width=25)
+        bfm_combo = ttk.Combobox(header_frame, textvariable=bfm_var, values=equipment_list,
+                                 width=25, state='readonly')
         bfm_combo.grid(row=row, column=1, sticky='w', padx=5, pady=5)
         row += 1
 
