@@ -166,6 +166,31 @@ def migrate_existing_db(conn):
     except Exception:
         pass
 
+    # ---- cannot_find_assets: add missing columns ---------------------------
+    for col_def in [
+        "ALTER TABLE cannot_find_assets ADD COLUMN description   TEXT",
+        "ALTER TABLE cannot_find_assets ADD COLUMN location      TEXT",
+        "ALTER TABLE cannot_find_assets ADD COLUMN reported_date TEXT",
+        "ALTER TABLE cannot_find_assets ADD COLUMN reported_by   TEXT",
+        "ALTER TABLE cannot_find_assets ADD COLUMN found_by      TEXT",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass  # column already exists
+
+    # ---- run_to_failure_assets: add missing columns ------------------------
+    for col_def in [
+        "ALTER TABLE run_to_failure_assets ADD COLUMN description     TEXT",
+        "ALTER TABLE run_to_failure_assets ADD COLUMN location        TEXT",
+        "ALTER TABLE run_to_failure_assets ADD COLUMN technician_name TEXT",
+        "ALTER TABLE run_to_failure_assets ADD COLUMN completion_date TEXT",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass  # column already exists
+
     # ---- pm_templates: add columns expected by the application ------------
     for col_def in [
         "ALTER TABLE pm_templates ADD COLUMN template_name        TEXT",
@@ -400,9 +425,14 @@ def create_core_tables(conn):
         CREATE TABLE IF NOT EXISTS cannot_find_assets (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             bfm_equipment_no TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
+            description      TEXT,
+            location         TEXT,
             status           TEXT    DEFAULT 'Missing',
             search_status    TEXT,
+            reported_date    TEXT    DEFAULT CURRENT_TIMESTAMP,
+            reported_by      TEXT,
             found_date       TEXT,
+            found_by         TEXT,
             technician_name  TEXT,
             notes            TEXT,
             created_date     TEXT    DEFAULT CURRENT_TIMESTAMP
@@ -431,6 +461,10 @@ def create_core_tables(conn):
         CREATE TABLE IF NOT EXISTS run_to_failure_assets (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             bfm_equipment_no TEXT    REFERENCES equipment(bfm_equipment_no) ON DELETE CASCADE,
+            description      TEXT,
+            location         TEXT,
+            technician_name  TEXT,
+            completion_date  TEXT,
             justification    TEXT,
             approved_by      TEXT,
             start_date       TEXT    DEFAULT CURRENT_TIMESTAMP,
