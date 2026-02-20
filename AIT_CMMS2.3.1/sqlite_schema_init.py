@@ -11,6 +11,7 @@ directly as a standalone script for fresh installs:
     python sqlite_schema_init.py
 """
 
+import csv
 import sqlite3
 import hashlib
 import os
@@ -769,6 +770,85 @@ def seed_kpi_definitions(conn):
 
 
 # ---------------------------------------------------------------------------
+# Seed equipment from CSV files (P1 / P2 / P3)
+# ---------------------------------------------------------------------------
+
+_CSV_FILES = {
+    1: os.path.join(os.path.dirname(os.path.abspath(__file__)), "PM_LIST_A220_1.csv"),
+    2: os.path.join(os.path.dirname(os.path.abspath(__file__)), "PM_LIST_A220_2.csv"),
+    3: os.path.join(os.path.dirname(os.path.abspath(__file__)), "PM_LIST_A220_3.csv"),
+}
+
+# PM flags assigned per priority level when importing from CSV
+_PM_FLAGS = {
+    1: dict(weekly_pm=1, monthly_pm=1, six_month_pm=1, annual_pm=1),  # P1 Critical
+    2: dict(weekly_pm=0, monthly_pm=1, six_month_pm=1, annual_pm=1),  # P2 High
+    3: dict(weekly_pm=0, monthly_pm=0, six_month_pm=0, annual_pm=1),  # P3 Medium
+}
+
+
+def seed_equipment_from_csv(conn):
+    """
+    Import equipment from PM_LIST_A220_1/2/3.csv into the equipment table.
+    Only runs when the equipment table is completely empty (fresh install).
+    Safe to call on every startup — skips import if data already exists.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM equipment")
+    if cur.fetchone()[0] > 0:
+        return  # already populated — nothing to do
+
+    imported = 0
+    skipped = 0
+
+    for priority, csv_path in _CSV_FILES.items():
+        if not os.path.exists(csv_path):
+            print(f"Warning: CSV file not found, skipping: {csv_path}")
+            continue
+
+        flags = _PM_FLAGS[priority]
+
+        with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                bfm = str(row.get("BFM", "")).strip()
+                if not bfm:
+                    skipped += 1
+                    continue
+
+                sap    = str(row.get("SAP", "")).strip()
+                desc   = str(row.get("DESCRIPTION", "")).strip()
+                tool   = str(row.get("TOOL ID", "")).strip()
+                loc    = str(row.get("LOCATION", "")).strip()
+                pm_qty = str(row.get("PM QTY", "")).strip()
+
+                try:
+                    cur.execute(
+                        """
+                        INSERT OR IGNORE INTO equipment
+                            (bfm_equipment_no, sap_material_no, description,
+                             tool_id_drawing_no, location, priority, pm_qty,
+                             weekly_pm, monthly_pm, six_month_pm, annual_pm,
+                             status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')
+                        """,
+                        (bfm, sap, desc, tool, loc, priority, pm_qty,
+                         flags["weekly_pm"], flags["monthly_pm"],
+                         flags["six_month_pm"], flags["annual_pm"]),
+                    )
+                    if cur.rowcount:
+                        imported += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    print(f"Warning: could not import BFM {bfm}: {e}")
+                    skipped += 1
+
+    conn.commit()
+    print(f"Equipment seeded from CSV: {imported} imported, {skipped} skipped.")
+
+
+# ---------------------------------------------------------------------------
 # Master initialisation entry point
 # ---------------------------------------------------------------------------
 
@@ -786,6 +866,7 @@ def initialise_database(db_path=None):
         create_indexes(conn)
         seed_default_users(conn)
         seed_kpi_definitions(conn)
+        seed_equipment_from_csv(conn)
         print("SQLite database initialisation complete.")
     finally:
         conn.close()
