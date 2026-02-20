@@ -9985,60 +9985,45 @@ class AITCMMSSystem:
 
             # SCHEMA MIGRATION: Add missing columns if they don't exist
             # This ensures existing databases are updated to the new schema
+            for _col_sql in [
+                "ALTER TABLE weekly_pm_schedules ADD COLUMN pm_type TEXT",
+                "ALTER TABLE weekly_pm_schedules ADD COLUMN scheduled_date TEXT",
+                "ALTER TABLE weekly_pm_schedules ADD COLUMN status TEXT DEFAULT 'Scheduled'",
+            ]:
+                try:
+                    cursor.execute(_col_sql)
+                except Exception:
+                    pass  # Column already exists
+            # Migrate old schedule_type data to pm_type if needed
             try:
-                cursor.execute('''
-                    ALTER TABLE weekly_pm_schedules
-                    ADD COLUMN IF NOT EXISTS pm_type TEXT
-                ''')
-                cursor.execute('''
-                    ALTER TABLE weekly_pm_schedules
-                    ADD COLUMN IF NOT EXISTS scheduled_date TEXT
-                ''')
-                cursor.execute('''
-                    ALTER TABLE weekly_pm_schedules
-                    ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Scheduled'
-                ''')
-                # Migrate old schedule_type data to pm_type if needed
                 cursor.execute('''
                     UPDATE weekly_pm_schedules
                     SET pm_type = schedule_type
                     WHERE pm_type IS NULL AND schedule_type IS NOT NULL
                 ''')
-            except Exception as e:
-                print(f"Note: Schema migration skipped or already applied: {e}")
-                # Continue even if columns already exist
+            except Exception:
+                pass
 
             # SCHEMA MIGRATION: Add photo columns to equipment table
-            try:
-                cursor.execute('''
-                    ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS picture_1_data BLOB
-                ''')
-                cursor.execute('''
-                    ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS picture_2_data BLOB
-                ''')
-                print("INFO: Equipment photo columns added successfully")
-            except Exception as e:
-                print(f"Note: Equipment photo column migration skipped: {e}")
+            for _col_sql in [
+                "ALTER TABLE equipment ADD COLUMN picture_1_data BLOB",
+                "ALTER TABLE equipment ADD COLUMN picture_2_data BLOB",
+            ]:
+                try:
+                    cursor.execute(_col_sql)
+                except Exception:
+                    pass  # Column already exists
 
             # SCHEMA MIGRATION: Add weekly PM columns to equipment table
-            try:
-                cursor.execute('''
-                    ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS weekly_pm INTEGER DEFAULT 0
-                ''')
-                cursor.execute('''
-                    ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS last_weekly_pm TEXT
-                ''')
-                cursor.execute('''
-                    ALTER TABLE equipment
-                    ADD COLUMN IF NOT EXISTS next_weekly_pm TEXT
-                ''')
-                print("INFO: Weekly PM columns added successfully")
-            except Exception as e:
-                print(f"Note: Weekly PM column migration skipped: {e}")
+            for _col_sql in [
+                "ALTER TABLE equipment ADD COLUMN weekly_pm INTEGER DEFAULT 0",
+                "ALTER TABLE equipment ADD COLUMN last_weekly_pm TEXT",
+                "ALTER TABLE equipment ADD COLUMN next_weekly_pm TEXT",
+            ]:
+                try:
+                    cursor.execute(_col_sql)
+                except Exception:
+                    pass  # Column already exists
 
             # Corrective Maintenance table
             cursor.execute('''

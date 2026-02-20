@@ -154,6 +154,17 @@ def migrate_existing_db(conn):
         except Exception:
             pass
 
+    # ---- equipment: add columns missing from older schema versions ----------
+    for col_def in [
+        "ALTER TABLE equipment ADD COLUMN next_weekly_pm TEXT",
+        "ALTER TABLE equipment ADD COLUMN picture_1_data BLOB",
+        "ALTER TABLE equipment ADD COLUMN picture_2_data BLOB",
+    ]:
+        try:
+            cur.execute(col_def)
+        except Exception:
+            pass
+
     # ---- deactivated_assets: add status column -----------------------------
     try:
         cur.execute("ALTER TABLE deactivated_assets ADD COLUMN status TEXT DEFAULT 'Deactivated'")
@@ -291,6 +302,7 @@ def create_core_tables(conn):
             last_monthly_pm      TEXT,
             last_six_month_pm    TEXT,
             last_annual_pm       TEXT,
+            next_weekly_pm       TEXT,
             next_monthly_pm      TEXT,
             next_six_month_pm    TEXT,
             next_annual_pm       TEXT,
@@ -301,6 +313,8 @@ def create_core_tables(conn):
             picture_2            BLOB,
             picture_1_path       TEXT,
             picture_2_path       TEXT,
+            picture_1_data       BLOB,
+            picture_2_data       BLOB,
             custom_pm_start_date TEXT,
             notes                TEXT,
             version              INTEGER DEFAULT 1,
