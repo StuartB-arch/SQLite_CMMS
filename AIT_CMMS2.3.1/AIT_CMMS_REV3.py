@@ -14442,14 +14442,16 @@ class AITCMMSSystem:
                         UPDATE equipment SET
                         last_monthly_pm = ?,
                         next_monthly_pm = date(?, '+30 day'),
-                        next_annual_pm = ?
+                        next_annual_pm = ?,
+                        updated_date = CURRENT_TIMESTAMP
                         WHERE bfm_equipment_no = ?
                     ''', (completion_date, completion_date, next_annual_pm, bfm_no))
                 else:
                     cursor.execute('''
                         UPDATE equipment SET
                         last_monthly_pm = ?,
-                        next_monthly_pm = date(?, '+30 day')
+                        next_monthly_pm = date(?, '+30 day'),
+                        updated_date = CURRENT_TIMESTAMP
                         WHERE bfm_equipment_no = ?
                     ''', (completion_date, completion_date, bfm_no))
                     
@@ -14457,7 +14459,8 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE equipment SET
                     last_six_month_pm = ?,
-                    next_six_month_pm = date(?, '+180 day')
+                    next_six_month_pm = date(?, '+180 day'),
+                    updated_date = CURRENT_TIMESTAMP
                     WHERE bfm_equipment_no = ?
                 ''', (completion_date, completion_date, bfm_no))
                 
@@ -14465,7 +14468,8 @@ class AITCMMSSystem:
                 cursor.execute('''
                     UPDATE equipment SET
                     last_annual_pm = ?,
-                    next_annual_pm = date(?, '+365 day')
+                    next_annual_pm = date(?, '+365 day'),
+                    updated_date = CURRENT_TIMESTAMP
                     WHERE bfm_equipment_no = ?
                 ''', (completion_date, completion_date, bfm_no))
 
@@ -14734,7 +14738,8 @@ class AITCMMSSystem:
                 status = "Run to Failure",
                 monthly_pm = 0,
                 six_month_pm = 0,
-                annual_pm = 0
+                annual_pm = 0,
+                updated_date = CURRENT_TIMESTAMP
                 WHERE bfm_equipment_no = ?
             ''', (bfm_no,))
         
