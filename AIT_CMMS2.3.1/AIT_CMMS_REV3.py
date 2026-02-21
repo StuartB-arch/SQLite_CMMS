@@ -21678,15 +21678,23 @@ class AITCMMSSystem:
                     ORDER BY bfm_equipment_no
                 ''')
                 equipment_data = cursor.fetchall()
-            
-                # Create DataFrame
-                columns = ['ID', 'SAP Material No', 'BFM Equipment No', 'Description', 
-                          'Tool ID/Drawing No', 'Location', 'Master LIN', 'Monthly PM', 
-                          'Six Month PM', 'Annual PM', 'Last Monthly PM', 'Last Six Month PM', 
-                          'Last Annual PM', 'Next Monthly PM', 'Next Six Month PM', 
+
+                # Create DataFrame.
+                # The DB connection uses a custom _Row row-factory (a dict subclass).
+                # pd.DataFrame treats dict-like rows by their keys (the raw DB column
+                # names, e.g. 'id', 'sap_material_no') rather than positionally, so
+                # the human-readable column labels ('ID', 'SAP Material No', …) all
+                # resolve to NaN, producing a CSV that has headers but no data.
+                # Converting each row to a plain tuple forces pandas to use positional
+                # (index-based) assignment and populates the columns correctly.
+                rows = [tuple(row) for row in equipment_data]
+                columns = ['ID', 'SAP Material No', 'BFM Equipment No', 'Description',
+                          'Tool ID/Drawing No', 'Location', 'Master LIN', 'Monthly PM',
+                          'Six Month PM', 'Annual PM', 'Last Monthly PM', 'Last Six Month PM',
+                          'Last Annual PM', 'Next Monthly PM', 'Next Six Month PM',
                           'Next Annual PM', 'Status', 'Created Date', 'Updated Date']
-            
-                df = pd.DataFrame(equipment_data, columns=columns)
+
+                df = pd.DataFrame(rows, columns=columns)
                 df.to_csv(file_path, index=False)
             
                 messagebox.showinfo("Success", f"Equipment list exported to {file_path}")
