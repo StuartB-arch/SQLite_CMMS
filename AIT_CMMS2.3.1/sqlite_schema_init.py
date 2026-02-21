@@ -600,77 +600,6 @@ def create_core_tables(conn):
 
 
 # ---------------------------------------------------------------------------
-# DDL – KPI tables
-# ---------------------------------------------------------------------------
-
-def create_kpi_tables(conn):
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS kpi_definitions (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            function_code     TEXT    NOT NULL,
-            kpi_name          TEXT    NOT NULL UNIQUE,
-            description       TEXT,
-            formula           TEXT,
-            acceptance_criteria TEXT,
-            frequency         TEXT,
-            data_source       TEXT,
-            is_active         INTEGER DEFAULT 1,
-            created_date      TEXT    DEFAULT CURRENT_TIMESTAMP,
-            updated_date      TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS kpi_manual_data (
-            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-            kpi_name           TEXT    NOT NULL REFERENCES kpi_definitions(kpi_name) ON DELETE CASCADE,
-            measurement_period TEXT    NOT NULL,
-            data_field         TEXT    NOT NULL,
-            data_value         REAL,
-            data_text          TEXT,
-            notes              TEXT,
-            entered_by         TEXT,
-            entered_date       TEXT    DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(kpi_name, measurement_period, data_field)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS kpi_results (
-            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-            kpi_name           TEXT    NOT NULL REFERENCES kpi_definitions(kpi_name) ON DELETE CASCADE,
-            measurement_period TEXT    NOT NULL,
-            calculated_value   REAL,
-            calculated_text    TEXT,
-            target_value       REAL,
-            meets_criteria     INTEGER,
-            calculation_date   TEXT    DEFAULT CURRENT_TIMESTAMP,
-            calculated_by      TEXT,
-            notes              TEXT,
-            UNIQUE(kpi_name, measurement_period)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS kpi_exports (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            export_date   TEXT    DEFAULT CURRENT_TIMESTAMP,
-            export_period TEXT,
-            export_type   TEXT,
-            exported_by   TEXT,
-            file_name     TEXT,
-            kpi_count     INTEGER,
-            notes         TEXT
-        )
-    """)
-
-    conn.commit()
-    print("KPI tables created.")
-
-
-# ---------------------------------------------------------------------------
 # Indexes
 # ---------------------------------------------------------------------------
 
@@ -735,106 +664,6 @@ def seed_default_users(conn):
         )
     conn.commit()
     print("Default users seeded.")
-
-
-def seed_kpi_definitions(conn):
-    cur = conn.cursor()
-    kpi_data = [
-        ("F1",             "FR1",
-         "Injury frequency rate",
-         "number Accident (with sick leave > 24h) / nb hours worked x 1,000,000",
-         "0", "Monthly", "Supplier Own Record"),
-
-        ("F1",             "Near Miss",
-         "Near miss reports",
-         "N/A", "Raise when near miss identified", "Monthly", "Supplier own record"),
-
-        ("F2.1",           "TTR (Time to Repair) Adherence",
-         "Time to Repair Adherence",
-         "(number of maintenance Andons within time / number of maintenance received) x 100%",
-         "P1 asset <2hours P2 asset <4hours", "Monthly", "Maintenance provider"),
-
-        ("F2.1",           "MTBF Mean Time Between Failure",
-         "Average time between asset breakdown",
-         "MTBF= Total operating time / Number of WO with disruption",
-         "P1 assets >80hours P2 assets >40hours", "Monthly", "Maintenance provider"),
-
-        ("F2.1",           "Technical Availability Adherence",
-         "Technical availability percentage",
-         "(nb assets with TA reached / nb assets) x 100%",
-         "P1 Critical assets >95%", "Monthly", "Maintenance provider"),
-
-        ("F2.1",           "MRT (Mean Response Time)",
-         "Mean time from request to response",
-         "Sum(response time) / number of WO with disruption",
-         "P1 <15 min P2 <1 hr P3 <3 hr", "Monthly", "Maintenance provider"),
-
-        ("F2.1",           "WO opened vs WO closed",
-         "WOs opened vs closed in a month",
-         "number of WO open vs WO closed",
-         "No >40 open WO", "Monthly", "Maintenance provider"),
-
-        ("F2.1",           "WO Backlog",
-         "Number of WO open at a point in time",
-         "Total of WO open",
-         "<10% of the WO raised in a month", "Monthly", "Maintenance provider"),
-
-        ("F2.1",           "WO age profile",
-         "Age of open WO",
-         "Age of work order",
-         "Nb of WO to exceed 60 days", "Monthly", "Maintenance provider"),
-
-        ("F2.2",           "Preventive Maintenance Adherence",
-         "Adherence to scheduled PM WOs",
-         "(number of WO completed / number of WO scheduled) x 100%",
-         ">95%", "Monthly", "Maintenance provider"),
-
-        ("F4.2",           "Top Breakdown",
-         "Top Break Down Analysis",
-         "NA",
-         "Pareto of failure on critical assets", "Monthly", "Maintenance provider"),
-
-        ("F4.3",           "Purchaser Monthly process Confirmation",
-         "Monthly go look see routine result",
-         "NA",
-         "Score of >90%", "Monthly", "Maintenance provider"),
-
-        ("F4 and all",     "Purchaser satisfaction",
-         "Customer Satisfaction Survey",
-         "Yearly satisfaction survey",
-         "1/year", "Quarterly", "local"),
-
-        ("All Functions",  "Non Conformances raised",
-         "Number of Non Conformances raised",
-         "NC Count", "0", "Monthly", "Local"),
-
-        ("All functions",  "Non Conformances closed",
-         "Number of Non Conformances closed within timeframe",
-         "NC closed before due date count",
-         "100% closed in contractual timeframe", "Monthly", "Contractual"),
-
-        ("F7.1",           "Mean Time to Deliver a Quote",
-         "Mean time to deliver a quote",
-         "Average lead-time for each request",
-         "<48 hours", "Monthly", "Maintenance provider"),
-
-        ("F7.1",           "Purchaser Satisfaction Survey",
-         "Annual satisfaction survey score",
-         "Survey score",
-         ">=90%", "Yearly", "local"),
-    ]
-    for kpi in kpi_data:
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO kpi_definitions
-            (function_code, kpi_name, description, formula,
-             acceptance_criteria, frequency, data_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            kpi,
-        )
-    conn.commit()
-    print(f"KPI definitions seeded ({len(kpi_data)} entries).")
 
 
 # ---------------------------------------------------------------------------
@@ -930,10 +759,8 @@ def initialise_database(db_path=None):
     try:
         migrate_existing_db(conn)   # fix any old column names first
         create_core_tables(conn)
-        create_kpi_tables(conn)
         create_indexes(conn)
         seed_default_users(conn)
-        seed_kpi_definitions(conn)
         seed_equipment_from_csv(conn)
         print("SQLite database initialisation complete.")
     finally:
