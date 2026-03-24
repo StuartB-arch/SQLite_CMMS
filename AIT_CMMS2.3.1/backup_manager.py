@@ -44,12 +44,20 @@ class BackupManager:
     def __init__(self, pool=None, backup_dir: Optional[str] = None):
         self.pool = pool
         self.db_path = _DB_FILE
+        self.using_fallback_location = False
         if backup_dir:
             self.backup_dir = Path(backup_dir)
         else:
             self.backup_dir = Path(os.path.dirname(os.path.abspath(__file__))) / "backups"
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.backup_dir = Path.home() / "cmms_backups"
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
+            self.using_fallback_location = True
         self._lock = threading.Lock()
+        self.config = {'schedule': 'daily', 'retention_days': 30}
+        self._backup_log: List[Dict] = []
 
     def _get_connection(self):
         """Get a direct SQLite connection"""
@@ -119,14 +127,18 @@ class BackupManager:
 
                 size = backup_path.stat().st_size
                 total_rows = sum(t["count"] for t in backup_data["tables"].values())
-                print(f"Backup created: {backup_path.name} ({size:,} bytes, {total_rows:,} rows)")
-                return True, str(backup_path)
+                msg = f"{size:,} bytes, {total_rows:,} rows across {len(backup_data['tables'])} tables"
+                print(f"Backup created: {backup_path.name} ({msg})")
+                self._backup_log.append({'backup_file': backup_path.name, 'status': 'success',
+                                         'message': msg, 'file_size': size,
+                                         'timestamp': datetime.now().isoformat()})
+                return True, str(backup_path), msg
 
             except Exception as e:
                 print(f"Backup failed: {e}")
-                return False, str(e)
+                return False, "", str(e)
 
-    def restore_backup(self, backup_path: str) -> Tuple[bool, str]:
+    def restore_backup(self, backup_path: str, confirm: bool = False) -> Tuple[bool, str]:
         """
         Restore the database from a backup file.
 
@@ -186,12 +198,16 @@ class BackupManager:
         for f in self.backup_dir.glob(f"*{BACKUP_FILE_EXTENSION}"):
             try:
                 stat = f.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime)
+                age_days = (datetime.now() - mtime).days
                 backups.append({
                     "name": f.stem,
+                    "filename": f.name,
                     "path": str(f),
                     "size": stat.st_size,
-                    "created": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                    "size_mb": round(stat.st_size / 1024 / 1024, 2)
+                    "created": mtime.strftime("%Y-%m-%d %H:%M:%S"),
+                    "size_mb": round(stat.st_size / 1024 / 1024, 2),
+                    "age_days": age_days,
                 })
             except Exception:
                 pass
@@ -220,6 +236,14 @@ class BackupManager:
             if success:
                 deleted += 1
         return deleted
+
+    def get_backup_log(self) -> List[Dict]:
+        """Return the in-memory backup operation log."""
+        return list(self._backup_log)
+
+    def update_config(self, new_config: Dict) -> None:
+        """Update the backup configuration."""
+        self.config.update(new_config)
 
     def get_backup_info(self, backup_path: str) -> Optional[Dict]:
         """Get metadata from a backup file without restoring it."""
