@@ -35,6 +35,8 @@ def _deserialize_value(v):
         t, val = v['_t'], v['v']
         if t == 'bytes':
             return bytes.fromhex(val)
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False, default=str)
     return v
 
 
@@ -166,18 +168,53 @@ class BackupManager:
                     cur = conn.cursor()
                     cur.execute("PRAGMA foreign_keys=OFF")
 
-                    for table_name, table_data in backup_data["tables"].items():
+                    # Support tables stored as a dict {name: data} or a list [{name, columns, rows}]
+                    tables_raw = backup_data["tables"]
+                    if isinstance(tables_raw, list):
+                        tables_iter = {t["name"]: t for t in tables_raw}.items()
+                    else:
+                        tables_iter = tables_raw.items()
+
+                    for table_name, table_data in tables_iter:
+                        # Skip tables that don't exist in the current schema
+                        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                        if not cur.fetchone():
+                            print(f"Skipping table {table_name}: not in current schema")
+                            continue
+
                         cur.execute(f"DELETE FROM {table_name}")
 
-                        columns = table_data["columns"]
-                        placeholders = ",".join(["?" for _ in columns])
-                        col_names = ",".join(columns)
-
-                        for row_data in table_data["rows"]:
-                            if isinstance(row_data, dict):
-                                values = [_deserialize_value(row_data.get(col)) for col in columns]
+                        # Support table_data as dict {columns, rows} or directly as a list of rows
+                        if isinstance(table_data, dict):
+                            columns = table_data["columns"]
+                            rows = table_data["rows"]
+                        else:
+                            # table_data is the rows list; infer columns from first row if dict
+                            rows = table_data
+                            if rows and isinstance(rows[0], dict):
+                                columns = list(rows[0].keys())
                             else:
-                                values = [_deserialize_value(v) for v in row_data]
+                                print(f"Skipping table {table_name}: cannot infer columns")
+                                continue
+
+                        # Filter to only columns that exist in the current table
+                        cur.execute(f"PRAGMA table_info({table_name})")
+                        existing_columns = {row[1] for row in cur.fetchall()}
+                        valid_indices = [i for i, c in enumerate(columns) if c in existing_columns]
+                        valid_columns = [columns[i] for i in valid_indices]
+
+                        if not valid_columns:
+                            print(f"Skipping table {table_name}: no matching columns")
+                            continue
+
+                        placeholders = ",".join(["?" for _ in valid_columns])
+                        col_names = ",".join(valid_columns)
+
+                        for row_data in rows:
+                            if isinstance(row_data, dict):
+                                values = [_deserialize_value(row_data.get(col)) for col in valid_columns]
+                            else:
+                                values = [_deserialize_value(row_data[i]) for i in valid_indices]
                             cur.execute(
                                 f"INSERT OR REPLACE INTO {table_name} ({col_names}) VALUES ({placeholders})",
                                 values
