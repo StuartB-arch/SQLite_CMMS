@@ -166,14 +166,33 @@ class BackupManager:
                     cur = conn.cursor()
                     cur.execute("PRAGMA foreign_keys=OFF")
 
-                    for table_name, table_data in backup_data["tables"].items():
+                    # Support tables stored as a dict {name: data} or a list [{name, columns, rows}]
+                    tables_raw = backup_data["tables"]
+                    if isinstance(tables_raw, list):
+                        tables_iter = {t["name"]: t for t in tables_raw}.items()
+                    else:
+                        tables_iter = tables_raw.items()
+
+                    for table_name, table_data in tables_iter:
                         cur.execute(f"DELETE FROM {table_name}")
 
-                        columns = table_data["columns"]
+                        # Support table_data as dict {columns, rows} or directly as a list of rows
+                        if isinstance(table_data, dict):
+                            columns = table_data["columns"]
+                            rows = table_data["rows"]
+                        else:
+                            # table_data is the rows list; infer columns from first row if dict
+                            rows = table_data
+                            if rows and isinstance(rows[0], dict):
+                                columns = list(rows[0].keys())
+                            else:
+                                print(f"Skipping table {table_name}: cannot infer columns")
+                                continue
+
                         placeholders = ",".join(["?" for _ in columns])
                         col_names = ",".join(columns)
 
-                        for row_data in table_data["rows"]:
+                        for row_data in rows:
                             if isinstance(row_data, dict):
                                 values = [_deserialize_value(row_data.get(col)) for col in columns]
                             else:
