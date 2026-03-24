@@ -35,6 +35,8 @@ def _deserialize_value(v):
         t, val = v['_t'], v['v']
         if t == 'bytes':
             return bytes.fromhex(val)
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, ensure_ascii=False, default=str)
     return v
 
 
