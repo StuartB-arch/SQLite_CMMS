@@ -176,6 +176,12 @@ class BackupManager:
                         tables_iter = tables_raw.items()
 
                     for table_name, table_data in tables_iter:
+                        # Skip tables that don't exist in the current schema
+                        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                        if not cur.fetchone():
+                            print(f"Skipping table {table_name}: not in current schema")
+                            continue
+
                         cur.execute(f"DELETE FROM {table_name}")
 
                         # Support table_data as dict {columns, rows} or directly as a list of rows
@@ -191,14 +197,24 @@ class BackupManager:
                                 print(f"Skipping table {table_name}: cannot infer columns")
                                 continue
 
-                        placeholders = ",".join(["?" for _ in columns])
-                        col_names = ",".join(columns)
+                        # Filter to only columns that exist in the current table
+                        cur.execute(f"PRAGMA table_info({table_name})")
+                        existing_columns = {row[1] for row in cur.fetchall()}
+                        valid_indices = [i for i, c in enumerate(columns) if c in existing_columns]
+                        valid_columns = [columns[i] for i in valid_indices]
+
+                        if not valid_columns:
+                            print(f"Skipping table {table_name}: no matching columns")
+                            continue
+
+                        placeholders = ",".join(["?" for _ in valid_columns])
+                        col_names = ",".join(valid_columns)
 
                         for row_data in rows:
                             if isinstance(row_data, dict):
-                                values = [_deserialize_value(row_data.get(col)) for col in columns]
+                                values = [_deserialize_value(row_data.get(col)) for col in valid_columns]
                             else:
-                                values = [_deserialize_value(v) for v in row_data]
+                                values = [_deserialize_value(row_data[i]) for i in valid_indices]
                             cur.execute(
                                 f"INSERT OR REPLACE INTO {table_name} ({col_names}) VALUES ({placeholders})",
                                 values
