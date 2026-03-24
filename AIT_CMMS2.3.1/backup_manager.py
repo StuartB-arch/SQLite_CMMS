@@ -173,8 +173,11 @@ class BackupManager:
                         placeholders = ",".join(["?" for _ in columns])
                         col_names = ",".join(columns)
 
-                        for row_dict in table_data["rows"]:
-                            values = [_deserialize_value(row_dict.get(col)) for col in columns]
+                        for row_data in table_data["rows"]:
+                            if isinstance(row_data, dict):
+                                values = [_deserialize_value(row_data.get(col)) for col in columns]
+                            else:
+                                values = [_deserialize_value(v) for v in row_data]
                             cur.execute(
                                 f"INSERT OR REPLACE INTO {table_name} ({col_names}) VALUES ({placeholders})",
                                 values
